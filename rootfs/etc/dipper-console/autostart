@@ -1,0 +1,2 @@
+# Factory default: start Dipper Console after a normal local login on tty1.
+# Remove this file to keep a plain shell. SSH and root sessions are unaffected.

@@ -1,0 +1,13 @@
+# Runtime packages included in the factory image.
+libfreetype6
+libevdev2
+fonts-dejavu-core
+tmux
+ncurses-term
+dialog
+network-manager
+htop
+mc
+python3
+kbd
+console-setup-linux

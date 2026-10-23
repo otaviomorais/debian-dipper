@@ -1,3 +1,7 @@
+> Console atualizado / Português: [teclado, terminais, Wi-Fi e copiar/colar](docs/console-pt-BR.md).
+> Imagem com tudo integrado: `make image` ou a ação manual **Build factory console image**.
+> Para atualizar um Mi 8 já instalado: `sudo bash scripts/install-console.sh --autostart`.
+
 # 小米 8（xiaomi-dipper）Debian 13 刷机包 —— 无 GUI 控制台版
 
 面向小米 8 的 **Debian GNU/Linux 13 (trixie) aarch64** 成品镜像：开机直接进入

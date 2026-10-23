@@ -1,1033 +1,400 @@
-/*
- * fbkeyboard.c : framebuffer softkeyboard for touchscreen devices
- *
- * Copyright 2017 Julian Winkler <julia.winkler1@web.de>
- * Copyright 2020 Ferenc Bakonyi <bakonyi.ferenc@gmail.com>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
-#include <stdlib.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <string.h>
-#include <unistd.h>
-#include <dirent.h>
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Framebuffer keyboard for the Linux VT, based on fbkeyboard by
+ * Julian Winkler (2017) and Ferenc Bakonyi (2020).
+ * Touch recovery uses libevdev; no physical key remains held between taps.
+ */
+#define _GNU_SOURCE
 #include <errno.h>
-#include <poll.h>
-#include <time.h>
+#include <fcntl.h>
+#include <glob.h>
+#include <limits.h>
 #include <linux/fb.h>
 #include <linux/input.h>
+#include <linux/kd.h>
 #include <linux/uinput.h>
 #include <linux/vt.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <time.h>
+#include <unistd.h>
+#include <libevdev/libevdev.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include "touch.h"
 
-volatile sig_atomic_t done = 0;
-
-char *font = "/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf";
-char *device = NULL;
-char *special[][7] = {
-	{ "Esc", "Tab", "F10", " / ", " - ", " . ", " \\ " },
-	{ "Esc", "Tab", "F10", " ? ", " _ ", " > ", " | " },
+#define ROWS 7
+#define COLS 10
+#define MOD_SHIFT 1
+#define MOD_CTRL 2
+#define MOD_ALT 4
+#define ACT_SHIFT (KEY_MAX + 1)
+#define ACT_CTRL (KEY_MAX + 2)
+#define ACT_ALT (KEY_MAX + 3)
+#define ACT_NUM (KEY_MAX + 4)
+#define ACT_FN (KEY_MAX + 5)
+#define ACT_RESET (KEY_MAX + 6)
+struct key { const char *label; unsigned short code; unsigned char shift; };
+#define K(label, code) {label, code, 0}
+#define S(label, code) {label, code, 1}
+static const struct key common[ROWS][COLS] = {
+    {K("Esc",KEY_ESC), K("Tab",KEY_TAB), K("Home",KEY_HOME), K("End",KEY_END), K("PgUp",KEY_PAGEUP), K("PgDn",KEY_PAGEDOWN), K("Del",KEY_DELETE), K("Ins",KEY_INSERT), K("Fn",ACT_FN), K("Reset",ACT_RESET)},
+    {K("q",KEY_Q),K("w",KEY_W),K("e",KEY_E),K("r",KEY_R),K("t",KEY_T),K("y",KEY_Y),K("u",KEY_U),K("i",KEY_I),K("o",KEY_O),K("p",KEY_P)},
+    {K("a",KEY_A),K("s",KEY_S),K("d",KEY_D),K("f",KEY_F),K("g",KEY_G),K("h",KEY_H),K("j",KEY_J),K("k",KEY_K),K("l",KEY_L),K("/",KEY_SLASH)},
+    {K("Shift",ACT_SHIFT),K("z",KEY_Z),K("x",KEY_X),K("c",KEY_C),K("v",KEY_V),K("b",KEY_B),K("n",KEY_N),K("m",KEY_M),K(".",KEY_DOT),K("Bksp",KEY_BACKSPACE)},
+    {K("Ctrl",ACT_CTRL),K("Alt",ACT_ALT),K("123",ACT_NUM),K("Space",KEY_SPACE),K("Space",KEY_SPACE),K("-",KEY_MINUS),K("=",KEY_EQUAL),K("\\",KEY_BACKSLASH),K("'",KEY_APOSTROPHE),K("Enter",KEY_ENTER)},
+    {K("Left",KEY_LEFT),K("Down",KEY_DOWN),K("Up",KEY_UP),K("Right",KEY_RIGHT),K("Menu",KEY_F1),K("New",KEY_F2),K("Prev",KEY_F3),K("Next",KEY_F4),K("Split",KEY_F5),K("Zoom",KEY_F6)},
+    {K("Hist",KEY_F8),K("Select",KEY_F10),K("Copy",KEY_F11),K("Paste",KEY_F12),K("Cancel",KEY_ESC),K("Pane",KEY_F7),K("Cmd",KEY_F9),K("`",KEY_GRAVE),S("~",KEY_GRAVE),K("Reset",ACT_RESET)}
 };
-
-char *layout[] = {
-	"qwertyuiopasdfghjklzxcvbnm",
-	"QWERTYUIOPASDFGHJKLZXCVBNM",
-	"1234567890-=[];\'\\,.`/     ",
-	"!@#$%^&*()_+{}:\"|<>~?     "
+static const struct key numbers[3][COLS] = {
+    {K("1",KEY_1),K("2",KEY_2),K("3",KEY_3),K("4",KEY_4),K("5",KEY_5),K("6",KEY_6),K("7",KEY_7),K("8",KEY_8),K("9",KEY_9),K("0",KEY_0)},
+    {S("!",KEY_1),S("@",KEY_2),S("#",KEY_3),S("$",KEY_4),S("%",KEY_5),S("^",KEY_6),S("&",KEY_7),S("*",KEY_8),S("(",KEY_9),S(")",KEY_0)},
+    {K("Shift",ACT_SHIFT),K("[",KEY_LEFTBRACE),K("]",KEY_RIGHTBRACE),S("{",KEY_LEFTBRACE),S("}",KEY_RIGHTBRACE),K(";",KEY_SEMICOLON),S(":",KEY_SEMICOLON),K(",",KEY_COMMA),S("?",KEY_SLASH),K("Bksp",KEY_BACKSPACE)}
 };
-
-int layoutuse = 0;
-int ctrllock = 0;
-int altlock = 0;
-__u16 keys[][26] = {
-	{ KEY_ESC, KEY_TAB, KEY_F10, KEY_SLASH, KEY_MINUS, KEY_DOT, KEY_BACKSLASH },
-	{ KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O, KEY_P,
-	  KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L,
-	  KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M },
-	{ KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0,
-	  KEY_MINUS, KEY_EQUAL, KEY_LEFTBRACE, KEY_RIGHTBRACE, KEY_SEMICOLON, KEY_APOSTROPHE, KEY_BACKSLASH, KEY_COMMA, KEY_DOT,
-	  KEY_GRAVE, KEY_SLASH, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M },
-	{ KEY_LEFTSHIFT, KEY_BACKSPACE },
-	{ KEY_LEFTALT, KEY_SPACE, KEY_RIGHTCTRL, KEY_ENTER },
-	{ KEY_HOME, KEY_UP, KEY_PAGEUP,
-	  KEY_LEFT, KEY_ENTER, KEY_RIGHT,
-	  KEY_END, KEY_DOWN, KEY_PAGEDOWN,
-	  KEY_RIGHTSHIFT }
+static const struct key functions[3][COLS] = {
+    {K("F1",KEY_F1),K("F2",KEY_F2),K("F3",KEY_F3),K("F4",KEY_F4),K("F5",KEY_F5),K("F6",KEY_F6),K("F7",KEY_F7),K("F8",KEY_F8),K("F9",KEY_F9),K("F10",KEY_F10)},
+    {K("F11",KEY_F11),K("F12",KEY_F12),K("`",KEY_GRAVE),S("~",KEY_GRAVE),S("_",KEY_MINUS),S("+",KEY_EQUAL),S("|",KEY_BACKSLASH),S("\"",KEY_APOSTROPHE),S("<",KEY_COMMA),S(">",KEY_DOT)},
+    {K("Shift",ACT_SHIFT),K("z",KEY_Z),K("x",KEY_X),K("c",KEY_C),K("v",KEY_V),K("b",KEY_B),K("n",KEY_N),K("m",KEY_M),K(".",KEY_DOT),K("Bksp",KEY_BACKSPACE)}
 };
+static volatile sig_atomic_t stopped;
+static int fbfd=-1, uifd=-1, ttyfd=-1, inputfd=-1, rotation;
+static int screen_w, screen_h, width, full_height, key_height, kb_height, page, mods;
+static struct fb_fix_screeninfo fix;
+static struct fb_var_screeninfo var;
+static uint32_t *canvas;
+static FT_Library ft;
+static FT_Face face;
+static struct libevdev *input;
+static struct winsize saved_size[MAX_NR_CONSOLES+1];
+static unsigned char resized[MAX_NR_CONSOLES+1];
+static struct touch_state gesture;
+static int dirty=1, active_vt=-1;
 
-#define TOUCHCOLOR 0x4444ee
-#define BUTTONCOLOR 0x111122
-#define BACKLITCOLOR 0xff0000
-#define TERMCOLOR 0x000000
-int gap = 2;
-
-/*
- * 长按连发：手指按住不放超过 REPEAT_DELAY_MS 后开始连发，
- * 之后每隔 REPEAT_INTERVAL_MS 发一次；REPEAT_POLL_MS 是等待触摸事件
- * 时的超时时间，用来发现「手指一直按着没动」这个状态。
- */
-#define REPEAT_DELAY_MS 400
-#define REPEAT_INTERVAL_MS 80
-#define REPEAT_POLL_MS 50
-
-int rotate = 0;
-
-struct fb_var_screeninfo vinfo;
-struct fb_fix_screeninfo finfo;
-char *buf;
-unsigned int buflen;
-int fbheight;	// of framebuffer
-int fbwidth;	// of framebuffer
-int fblinelength;	// of one line of framebuffer
-int height;	// of one row of keys
-int width;	// of keyboard (= width of screen)
-int linelength;	// of one line of keyboard shape in bytes
-int landscape;	// false = portrait
-
-FT_Face face;
-int advance;	// offset to the next glyph
-
-int fduinput;
-struct input_event ie;
-int theight;	// of touchscreen
-int twidth;	// of touchscreen
-int trowh;	// heigth of one keyboard row on touchscreen
-
-void fill_rect(int x, int y, int w, int h, int color)
+static uint64_t milliseconds(void)
 {
-	int i, j, t;
-	int32_t *line;
-	switch (rotate) {
-		case FB_ROTATE_UR:
-			break;
-		case FB_ROTATE_UD:
-			x = width - x - w;
-			y = (height * 5) - y - h;
-			break;
-		case FB_ROTATE_CW:
-			y = (height * 5) - y - h;
-			t = w; w = h; h = t;
-			t = x; x = y; y = t;
-			break;
-		case FB_ROTATE_CCW:
-			x = width - x - w;
-			t = w; w = h; h = t;
-			t = x; x = y; y = t;
-			break;
-	}
-	for (i = 0; i < h; i++) {
-		line = (int32_t *) (buf + linelength * (y + i));
-		for (j = 0; j < w; j++) {
-			*(line + x + j) = color;
-		}
-	}
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC,&t);
+    return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;
 }
-
-void draw_char(int x, int y, char c)
+static void stop(int signal_number) { (void)signal_number; stopped=1; }
+static void fail(const char *message) { perror(message); exit(EXIT_FAILURE); }
+static struct key key_at(int index)
 {
-	int i, j, t;
-	int color;
-	FT_Matrix matrix;
-	switch (rotate) {
-		case FB_ROTATE_UR:
-			FT_Load_Char(face, c, FT_LOAD_RENDER);
-			x += face->glyph->bitmap_left;
-			y += (face->size->metrics.ascender >> 6) - face->glyph->bitmap_top;
-			advance = face->glyph->advance.x >> 6;
-			break;
-		case FB_ROTATE_UD:
-			matrix.xx = (FT_Fixed)(-1 * 0x10000L);
-			matrix.xy = (FT_Fixed)(0);
-			matrix.yx = (FT_Fixed)(0);
-			matrix.yy = (FT_Fixed)(-1 * 0x10000L);
-			FT_Set_Transform(face, &matrix, NULL);
-			FT_Load_Char(face, c, FT_LOAD_RENDER);
-			x = width - x;
-			y = (height * 5) - y;
-			x += (face->glyph->advance.x >> 6) - face->glyph->bitmap.width - face->glyph->bitmap_left;
-			y -= (face->size->metrics.ascender >> 6) + face->glyph->bitmap_top;
-			advance = -(face->glyph->advance.x >> 6);
-			break;
-		case FB_ROTATE_CW:
-			matrix.xx = (FT_Fixed)(0);
-			matrix.xy = (FT_Fixed)( 1 * 0x10000L);
-			matrix.yx = (FT_Fixed)(-1 * 0x10000L);
-			matrix.yy = (FT_Fixed)(0);
-			FT_Set_Transform(face, &matrix, NULL);
-			FT_Load_Char(face, c, FT_LOAD_RENDER);
-			y = (height * 5) - y;
-			x -= face->glyph->bitmap_top;
-			y += face->glyph->bitmap_left - (face->size->metrics.ascender >> 6);
-			t = x; x = y; y = t;
-			advance = -(face->glyph->advance.y >> 6);
-			break;
-		case FB_ROTATE_CCW:
-			matrix.xx = (FT_Fixed)(0);
-			matrix.xy = (FT_Fixed)(-1 * 0x10000L);
-			matrix.yx = (FT_Fixed)( 1 * 0x10000L);
-			matrix.yy = (FT_Fixed)(0);
-			FT_Set_Transform(face, &matrix, NULL);
-			FT_Load_Char(face, c, FT_LOAD_RENDER);
-			x = width - x;
-			x -= face->glyph->bitmap_top;
-			y += face->glyph->bitmap_left + (face->size->metrics.ascender >> 6);
-			t = x; x = y; y = t;
-			advance = face->glyph->advance.y >> 6;
-			break;
-	}
-	for (i = 0; i < (face->glyph->bitmap.rows); i++)
-		for (j = 0; j < face->glyph->bitmap.width; j++) {
-			color =
-			    *(face->glyph->bitmap.buffer +
-			      face->glyph->bitmap.pitch * i + j);
-			if (color) {
-				*(buf + linelength * (i + y) +
-				  (j + x) * 4) = color;
-				*(buf + linelength * (i + y) +
-				  (j + x) * 4 + 1) = color;
-				*(buf + linelength * (i + y) +
-				  (j + x) * 4 + 2) = color;
-			}
-		}
+    int r=index/COLS, c=index%COLS;
+    if (page==1 && r>=1 && r<=3) return numbers[r-1][c];
+    if (page==2 && r>=1 && r<=3) return functions[r-1][c];
+    return common[r][c];
 }
-
-void draw_text(int x, int y, char *text)
+static int repeatable(int index)
 {
-	while (*text) {
-		draw_char(x, y, *text);
-		text++;
-		x += advance;
-	}
+    if (index<0) return 0;
+    unsigned code=key_at(index).code;
+    return code==KEY_BACKSPACE || code==KEY_DELETE || code==KEY_LEFT ||
+           code==KEY_RIGHT || code==KEY_UP || code==KEY_DOWN;
 }
-
-void draw_key(int x, int y, int w, int h, int color)
+static int send_event(unsigned type, unsigned code, int value)
 {
-	fill_rect(x + gap, y + gap, w - 2 * gap, 1, BACKLITCOLOR);
-	fill_rect(x + gap, y + h - gap, w - 2 * gap, 1, BACKLITCOLOR);
-	fill_rect(x + gap, y + gap, 1, h - 2 * gap, BACKLITCOLOR);
-	fill_rect(x + w - gap, y + gap, 1, h - 2 * gap, BACKLITCOLOR);
-	fill_rect(x + gap + 1, y + gap + 1, w - 2 * gap - 2,
-		  h - 2 * gap - 2, color);
+    struct input_event e={.type=type,.code=code,.value=value};
+    ssize_t n;
+    do n=write(uifd,&e,sizeof(e)); while(n<0 && errno==EINTR);
+    return n==(ssize_t)sizeof(e) ? 0 : -1;
 }
-
-void draw_textbutton(int x, int y, int w, int h, int color, char *text)
+static void release_all(void)
 {
-	draw_key(x, y, w, h, color);
-	draw_text(x + gap + 14, y + gap + 24, text);
+    if (uifd<0) return;
+    for (unsigned code=1;code<=KEY_MAX;code++) send_event(EV_KEY,code,0);
+    send_event(EV_SYN,SYN_REPORT,0);
 }
-
-void draw_button(int x, int y, int w, int h, int color, char chr)
+static int tap(unsigned code, unsigned mask)
 {
-	draw_key(x, y, w, h, color);
-	draw_char(x + gap + 7, y + gap + 7, chr);
+    static const unsigned modifier_codes[]={KEY_LEFTSHIFT,KEY_LEFTCTRL,KEY_LEFTALT};
+    int error=0;
+    for (int i=0;i<3;i++) if(mask&(1U<<i)) error|=send_event(EV_KEY,modifier_codes[i],1);
+    error|=send_event(EV_KEY,code,1);
+    error|=send_event(EV_SYN,SYN_REPORT,0);
+    error|=send_event(EV_KEY,code,0);
+    for (int i=2;i>=0;i--) if(mask&(1U<<i)) error|=send_event(EV_KEY,modifier_codes[i],0);
+    error|=send_event(EV_SYN,SYN_REPORT,0);
+    if(error) { release_all(); stopped=1; }
+    return error;
 }
-
-void draw_keyboard(int row, int pressed)
+static void dispatch(int index)
 {
-	int key;
-	for (key = 0; key < 7; key++) {
-		draw_textbutton(key * width / 7 + 1, 1,
-				width / 7 - 1, height - 1,
-				(row == 0
-				 && key ==
-				 pressed) ? TOUCHCOLOR :
-				BUTTONCOLOR,
-				special[layoutuse & 1][key]);
-	}
-	for (key = 0; key < 10; key++) {
-		draw_button(key * width / 10 + 1, height * 1,
-			    width / 10 - 1, height - 1,
-			    (row == 1
-			     && key ==
-			     pressed) ? TOUCHCOLOR : BUTTONCOLOR,
-			    layout[layoutuse][key]);
-	}
-	for (key = 0; key < 9; key++) {
-		draw_button(width / 20 +
-			    key * width / 10, height * 2,
-			    width / 10 - 1, height - 1,
-			    (row == 1
-			     && key + 10 ==
-			     pressed) ? TOUCHCOLOR : BUTTONCOLOR,
-			    layout[layoutuse][key + 10]);
-	}
-	draw_textbutton(1, height * 3, width * 3 / 20 - 1,
-			height - 1,
-			(layoutuse & 1) ? TOUCHCOLOR : BUTTONCOLOR,
-			"Shift");
-	for (key = 0; key < 7; key++) {
-		draw_button(width * 3 / 20 +
-			    key * width / 10, height * 3,
-			    width / 10 - 1, height - 1,
-			    (row == 1
-			     && key + 19 ==
-			     pressed) ? TOUCHCOLOR : BUTTONCOLOR,
-			    layout[layoutuse][key + 19]);
-	}
-	draw_textbutton(width * 17 / 20, height * 3,
-			width * 3 / 20 - 1, height - 1,
-			(row == 3
-		 && 1 ==
-			 pressed) ? TOUCHCOLOR : BUTTONCOLOR,
-			"Bcksp");
-	draw_textbutton(1, height * 4, width * 3 / 20 - 1,
-			height - 1,
-			(99 == pressed) ? TOUCHCOLOR : BUTTONCOLOR,
-			(layoutuse & 2) ? "abcABC" : "123!@\"");
-	draw_textbutton(width * 3 / 20, height * 4,
-			width / 10 - 1, height - 1,
-			(altlock) ? TOUCHCOLOR : BUTTONCOLOR,
-			"Alt");
-	draw_button(width / 4, height * 4, width / 2 - 1,
-		    height - 1, (row == 4
-				&& 1 ==
-				pressed) ? TOUCHCOLOR :
-		    BUTTONCOLOR, ' ');
-	draw_textbutton(width * 3 / 4, height * 4,
-			width / 10 - 1, height - 1,
-			(ctrllock) ? TOUCHCOLOR : BUTTONCOLOR,
-			"Ctrl");
-	draw_textbutton(width * 17 / 20, height * 4,
-			width * 3 / 20 - 1, height - 1,
-			(row == 4
-			 && 3 ==
-			 pressed) ? TOUCHCOLOR : BUTTONCOLOR,
-			"Enter");
+    struct key k=key_at(index);
+    switch(k.code) {
+    case ACT_SHIFT: mods^=MOD_SHIFT; break;
+    case ACT_CTRL: mods^=MOD_CTRL; break;
+    case ACT_ALT: mods^=MOD_ALT; break;
+    case ACT_NUM: page=page==1?0:1; mods=0; break;
+    case ACT_FN: page=page==2?0:2; mods=0; break;
+    case ACT_RESET: mods=0; page=0; release_all(); break;
+    default: tap(k.code,(unsigned)mods|(k.shift?MOD_SHIFT:0)); mods=0; break;
+    }
+    dirty=1;
 }
-
-void show_fbkeyboard(int fbfd)
+/* Draw in upright logical coordinates, then rotate only the small keyboard area. */
+static void rect(int x,int y,int w,int h,uint32_t color)
 {
-	switch (rotate) {
-		case FB_ROTATE_UR:
-			lseek(fbfd, fblinelength * (fbheight - height * 5), SEEK_SET);
-			write(fbfd, buf, buflen);
-			break;
-		case FB_ROTATE_UD:
-			lseek(fbfd, 0, SEEK_SET);
-			write(fbfd, buf, buflen);
-			break;
-		case FB_ROTATE_CW:
-			for (int i = 0; i < width; i++) {
-				lseek(fbfd, fblinelength * i, SEEK_SET);
-				write(fbfd, (int32_t *) (buf + linelength * i), linelength);
-			}
-			break;
-		case FB_ROTATE_CCW:
-			for (int i = 0; i < width; i++) {
-				lseek(fbfd, fblinelength * i + (fbwidth - height * 5) * 4, SEEK_SET);
-				write(fbfd, (int32_t *) (buf + linelength * i), linelength);
-			}
-			break;
-	}
+    for(int j=y;j<y+h;j++) for(int i=x;i<x+w;i++)
+        if(i>=0 && i<width && j>=0 && j<kb_height) canvas[j*width+i]=color;
 }
-
-/* 单调时钟毫秒值，用于长按计时 */
-unsigned long long now_ms(void)
+static void text(int x,int y,const char *label,int cellwidth,uint32_t color)
 {
-	struct timespec ts;
-
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (unsigned long long) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    int px=key_height/4;
+    int limit=cellwidth/((int)strlen(label)+1);
+    if(px>limit*3/2) px=limit*3/2;
+    if(px<8) px=8;
+    FT_Set_Pixel_Sizes(face,0,(unsigned)px);
+    for(const unsigned char *p=(const unsigned char *)label;*p;p++) {
+        if(FT_Load_Char(face,*p,FT_LOAD_RENDER)) continue;
+        FT_GlyphSlot g=face->glyph;
+        for(unsigned j=0;j<g->bitmap.rows;j++) for(unsigned i=0;i<g->bitmap.width;i++) {
+            int dx=x+g->bitmap_left+(int)i, dy=y-g->bitmap_top+(int)j;
+            unsigned char alpha=g->bitmap.buffer[j*g->bitmap.pitch+i];
+            if(alpha && dx>=0 && dx<width && dy>=0 && dy<kb_height)
+                canvas[dy*width+dx]=color;
+        }
+        x+=(int)(g->advance.x>>6);
+    }
 }
-
-/*
- * 哪些键支持长按连发：删除键，以及隐藏导航格里的四个方向键。
- * row 5 的键位顺序见 keys[5]：0=Home 1=Up 2=PageUp 3=Left
- * 4=Enter 5=Right 6=End 7=Down 8=PageDown。
- */
-int is_repeat_key(int row, int pressed)
+static uint32_t pixel(uint32_t rgb)
 {
-	if (row == 3 && pressed == 1)		/* Bcksp */
-		return 1;
-	if (row == 5 && (pressed == 1 || pressed == 3 || pressed == 5
-			 || pressed == 7))	/* Up / Left / Right / Down */
-		return 1;
-	return 0;
+    uint32_t r=(rgb>>16)&255,g=(rgb>>8)&255,b=rgb&255;
+    return ((r>>(8-var.red.length))<<var.red.offset)|
+           ((g>>(8-var.green.length))<<var.green.offset)|
+           ((b>>(8-var.blue.length))<<var.blue.offset);
 }
-
-/*
- * Waits for a relevant input event.
- *
- * 返回值：
- *   0  触点位置有更新（手指按下 / 在键盘上滑动）
- *   1  手指抬起（这一次触摸结束）
- *   2  内核丢弃了事件（SYN_DROPPED），触点状态已复位；调用方只清高亮，
- *      **不要**补发按键
- *  -1  timeout_ms 毫秒内没有任何触摸事件（手指停在键上不动），
- *      这正是 main() 里长按连发逻辑所等待的状态
- *
- * 多触点状态。内核 input 层对 ABS_MT_* 轴是「按 slot 去重」的：新触点如果
- * 落在同一个 slot、且坐标与上一次相同，ABS_MT_POSITION_X/Y 会被直接丢弃，
- * 帧里只剩 ABS_MT_SLOT / ABS_MT_TRACKING_ID / ABS_MT_PRESSURE。原来这里
- * 要求同一帧里同时拿到 X 和 Y 才判定键位，于是这类「按下」整帧被忽略——
- * 表现为按同一个键时要按很多次才出一个字符，偶尔某个带坐标的旧帧进来
- * 还会让高亮跳到别的键上。
- *
- * 按内核约定改成维护每个 slot 的位置与按下状态：去重只发生在「值没变」时，
- * 所以 slot 里缓存的值就是该触点的真实位置。再固定跟踪一个活动 slot
- * （优先沿用上一次的）作为当前触点。
- */
-#define SLOT_MAX 16
-
-static int slot_x[SLOT_MAX], slot_y[SLOT_MAX];
-static unsigned char slot_down[SLOT_MAX];
-static int cur_slot;
-static int primary_slot = -1;
-
-int check_input_events(int fdinput, int *x, int *y, int timeout_ms)
+static void draw(void)
 {
-	int got_events = 0;
-	int frames = 0;
-	int ax, ay;
-	struct pollfd pfd;
-
-	pfd.fd = fdinput;
-	pfd.events = POLLIN;
-	pfd.revents = 0;
-
-	while (!done) {
-		int pressed_now = -1;
-
-		if (poll(&pfd, 1, got_events ? 0 : timeout_ms) <= 0)
-			break;
-
-		/* 读一整帧（到 SYN_REPORT 为止），只更新 slot 状态 */
-		for (;;) {
-			if (read(fdinput, &ie, sizeof(ie)) != (ssize_t)sizeof(ie))
-				break;
-			if (ie.type == EV_SYN) {
-				if (ie.code == SYN_DROPPED) {
-					/*
-					 * 内核输入缓冲区溢出：中间的事件（很可能
-					 * 包含手指抬起的 ABS_MT_TRACKING_ID=-1）
-					 * 已被丢弃，无法回放。把触点状态整体复位
-					 * 并返回 2，让调用方只清高亮、不补发按键。
-					 */
-					memset(slot_down, 0, sizeof(slot_down));
-					primary_slot = -1;
-					return 2;
-				}
-				if (ie.code == SYN_REPORT)
-					break;
-				continue;
-			}
-			if (ie.type != EV_ABS)
-				continue;
-			switch (ie.code) {
-				case ABS_MT_SLOT:
-					if (ie.value >= 0 && ie.value < SLOT_MAX)
-						cur_slot = ie.value;
-					break;
-				case ABS_MT_POSITION_X:
-					slot_x[cur_slot] = ie.value;
-					break;
-				case ABS_MT_POSITION_Y:
-					slot_y[cur_slot] = ie.value;
-					break;
-				case ABS_MT_TRACKING_ID:
-					if (ie.value != -1) {
-						slot_down[cur_slot] = 1;
-						pressed_now = cur_slot;
-					} else {
-						slot_down[cur_slot] = 0;
-					}
-					break;
-			}
-		}
-		got_events = 1;
-
-		/*
-		 * 抬起判定只看「被跟踪的那个触点还是不是按下的」。
-		 * 原来的写法要求触发抬手的 slot 恰好等于 primary_slot
-		 * （primary_slot == cur_slot）才算抬起，一旦上报顺序里
-		 * ABS_MT_SLOT 与 TRACKING_ID 的先后、或者多指交错，
-		 * 抬手就会被漏掉，高亮和长按连发会一直卡在按下的状态。
-		 */
-		if (primary_slot >= 0 && !slot_down[primary_slot]) {
-			primary_slot = -1;
-			return 1;
-		}
-		/* 没有当前触点时，从还按着的 slot 里挑一个 */
-		if (primary_slot < 0) {
-			int i;
-			if (pressed_now >= 0 && slot_down[pressed_now])
-				primary_slot = pressed_now;
-			else
-				for (i = 0; i < SLOT_MAX; i++)
-					if (slot_down[i]) {
-						primary_slot = i;
-						break;
-					}
-		}
-		if (primary_slot >= 0) {
-			/*
-			 * 这里不 break，而是继续把已经排队的帧一次读完，
-			 * 只把最新状态交给调用方。原来每轮只读一帧，重绘
-			 * 期间积压的事件会让高亮（和输入）明显滞后于手指；
-			 * 积压到内核输入缓冲区满还会触发 SYN_DROPPED 丢事件
-			 * （抬手事件丢在里面就是「按下去不释放」）。
-			 * 单次最多读 32 帧，保证调用耗时可控。
-			 */
-			if (++frames >= 32)
-				break;
-		}
-	}
-
-	if (!got_events || primary_slot < 0)
-		return -1;
-
-	ax = slot_x[primary_slot];
-	ay = slot_y[primary_slot];
-	switch (rotate) {
-		case FB_ROTATE_UR:
-			*x = ax * 0x10000 / twidth;
-			*y = ay * 0x10000 / theight;
-			break;
-		case FB_ROTATE_UD:
-			*x = 0x10000 - ax * 0x10000 / twidth;
-			*y = 0x10000 - ay * 0x10000 / theight;
-			break;
-		case FB_ROTATE_CW:
-			*x = ay * 0x10000 / theight;
-			*y = 0x10000 - ax * 0x10000 / twidth;
-			break;
-		case FB_ROTATE_CCW:
-			*x = 0x10000 - ay * 0x10000 / theight;
-			*y = ax * 0x10000 / twidth;
-			break;
-	}
-	return 0;
+    rect(0,0,width,kb_height,0x0b1220);
+    for(int r=0;r<ROWS;r++) for(int c=0;c<COLS;c++) {
+        if(r==4 && c==4) continue; /* space spans two columns */
+        int index=r*COLS+c, x=c*width/COLS, y=r*key_height;
+        int w=(c+(r==4 && c==3?2:1))*width/COLS-x;
+        struct key k=key_at(index);
+        int selected=gesture.id>=0 && !gesture.blocked && gesture.key==index;
+        int enabled=(k.code==ACT_SHIFT && (mods&MOD_SHIFT)) ||
+                    (k.code==ACT_CTRL && (mods&MOD_CTRL)) ||
+                    (k.code==ACT_ALT && (mods&MOD_ALT)) ||
+                    (k.code==ACT_NUM && page==1) || (k.code==ACT_FN && page==2);
+        rect(x+2,y+2,w-4,key_height-4,selected?0x2563eb:enabled?0x7c3aed:0x243247);
+        char label[16];
+        snprintf(label,sizeof(label),"%s",k.label);
+        if((mods&MOD_SHIFT) && strlen(label)==1 && label[0]>='a' && label[0]<='z') label[0]-=32;
+        text(x+6,y+key_height*2/3,label,w-12,0xe2e8f0);
+    }
+    int pw=(rotation&1)?kb_height:width;
+    int ph=(rotation&1)?width:kb_height;
+    uint32_t *line=calloc((size_t)pw,sizeof(*line));
+    if(!line) fail("framebuffer row");
+    for(int py=0;py<ph;py++) {
+        for(int px=0;px<pw;px++) {
+            int lx=px,ly=py;
+            if(rotation==1) { lx=py; ly=kb_height-1-px; }
+            if(rotation==2) { lx=width-1-px; ly=kb_height-1-py; }
+            if(rotation==3) { lx=width-1-py; ly=px; }
+            line[px]=pixel(canvas[ly*width+lx]);
+        }
+        int ox=rotation==3?screen_w-kb_height:0;
+        int oy=rotation==0?screen_h-kb_height:0;
+        off_t offset=(off_t)(oy+py+var.yoffset)*fix.line_length+(ox+var.xoffset)*4;
+        if(pwrite(fbfd,line,(size_t)pw*4,offset)!=(ssize_t)pw*4) { free(line); fail("write framebuffer"); }
+    }
+    free(line);
+    dirty=0;
 }
-
-/*
- * x, y and trowh are scaled to 2^16 (e.g. min x = 0, max x = 65535)
- */
-void identify_touched_key(int x, int y, int *row, int *pressed)
+static int hit(int ax,int ay)
 {
-	switch ((0x10000 - y) / trowh) {
-		case 4:
-			*row = 0;		// Esc, Tab, F10, etc
-			*pressed = x * 7 / 0x10000;
-			break;
-		case 3:
-			*row = 1;		// q - p
-			*pressed = x * 10 / 0x10000;
-			break;
-		case 2:
-			*row = 1;		// a - l
-			/*
-			 * 原来只在 x 落在 1/20..19/20 之间才给 pressed 赋值，
-			 * 手指点到字母行最左/最右那一小条时 pressed 保持 -1，整次
-			 * 触摸被丢弃。这里改成夹到最近的那个字母键。
-			 */
-			*pressed = 10 + (x * 10 - 0x10000 / 2) / 0x10000;
-			if (*pressed < 10)
-				*pressed = 10;
-			else if (*pressed > 18)
-				*pressed = 18;
-			break;
-		case 1:
-			if (x < 0x10000 * 3 / 20) {
-				*row = 3;
-				*pressed = 0;	// Left Shift
-			} else if (x < 0x10000 * 17 / 20) {
-				*row = 1;	// z - m
-				*pressed = 19 + (x * 10 - 0x10000 * 3 / 2) / 0x10000;
-			} else {
-				*row = 3;
-				*pressed = 1;	// Bcksp
-			}
-			break;
-		case 0:
-			*row = 4;
-			if (x < 0x10000 * 3 / 20)
-				*pressed = 99;	// 123!@
-			else if (x < 0x10000 * 5 / 20)
-				*pressed = 0;	// Left Alt
-			else if (x < 0x10000 * 15 / 20)
-				*pressed = 1;	// Space
-			else if (x < 0x10000 * 17 / 20)
-				*pressed = 2;	// Right Ctrl
-			else
-				*pressed = 3;	// Enter
-			break;
-		default:
-			*row = 5;		// cursor, Enter, Home, PgDn, etc
-			*pressed = 3 * y / (0x10000 - trowh * 5);
-			*pressed *= 3;
-			*pressed += 3 * x / 0x10000;
-			break;
-	}
+    const struct input_absinfo *a=libevdev_get_abs_info(input,ABS_MT_POSITION_X);
+    const struct input_absinfo *b=libevdev_get_abs_info(input,ABS_MT_POSITION_Y);
+    int64_t x=(int64_t)(ax-a->minimum)*(screen_w-1)/(a->maximum-a->minimum);
+    int64_t y=(int64_t)(ay-b->minimum)*(screen_h-1)/(b->maximum-b->minimum);
+    if(x<0 || x>=screen_w || y<0 || y>=screen_h) return -1;
+    int lx=(int)x,ly=(int)y;
+    if(rotation==1) { lx=(int)y; ly=screen_w-1-(int)x; }
+    if(rotation==2) { lx=screen_w-1-(int)x; ly=screen_h-1-(int)y; }
+    if(rotation==3) { lx=screen_h-1-(int)y; ly=(int)x; }
+    ly-=full_height-kb_height;
+    if(ly<0 || ly>=kb_height) return -1;
+    int r=ly/key_height,c=lx*COLS/width;
+    if(r==4 && c==4) c=3;
+    return r*COLS+c;
 }
-
-void send_key(__u16 code)
+static void frame(void)
 {
-	ie.type = EV_KEY;
-	ie.code = code;
-	ie.value = 1;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
-	ie.value = 0;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
-//	ie.code = KEY_RIGHTCTRL;
-//	if(write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-//		fprintf(stderr, "error: sending uinput event\n");
-	ie.type = EV_SYN;
-	ie.code = SYN_REPORT;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
+    int count=0,id=-1,key=-1;
+    for(int i=0;i<libevdev_get_num_slots(input);i++) {
+        int tracking=libevdev_get_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID);
+        if(tracking<0) continue;
+        count++; id=tracking;
+        key=hit(libevdev_get_slot_value(input,(unsigned)i,ABS_MT_POSITION_X),
+                libevdev_get_slot_value(input,(unsigned)i,ABS_MT_POSITION_Y));
+    }
+    int before=gesture.key, blocked=gesture.blocked, down=gesture.id>=0;
+    int action=touch_frame(&gesture,count,id,key,repeatable(key),milliseconds());
+    if(action) dispatch(gesture.key);
+    if(before!=gesture.key || blocked!=gesture.blocked || down!=(gesture.id>=0)) dirty=1;
 }
-
-/*
- * 发送「带 Shift 的组合键」：按下 Shift、按下并松开 code、松开 Shift，
- * 最后补一个 SYN_REPORT。用于隐藏九宫格的右上/右下键滚动控制台日志。
- * 这里固定用右 Shift：左 Shift 被 layoutuse 当作大小写锁定按住，
- * 若用左 Shift 会把那个锁定状态一并松开。
- */
-void send_shift_key(__u16 code)
+static int console_ready(void)
 {
-	ie.type = EV_KEY;
-	ie.code = KEY_RIGHTSHIFT;
-	ie.value = 1;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
-	ie.code = code;
-	ie.value = 1;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
-	ie.code = code;
-	ie.value = 0;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
-	ie.code = KEY_RIGHTSHIFT;
-	ie.value = 0;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
-	ie.type = EV_SYN;
-	ie.code = SYN_REPORT;
-	if (write(fduinput, &ie, sizeof(ie)) != sizeof(ie))
-		fprintf(stderr, "error: sending uinput event\n");
+    struct vt_stat vt;
+    if(ioctl(ttyfd,VT_GETSTATE,&vt)<0 || vt.v_active<1 || vt.v_active>MAX_NR_CONSOLES) return 0;
+    char path[32]; snprintf(path,sizeof(path),"/dev/tty%u",vt.v_active);
+    int fd=open(path,O_RDWR|O_CLOEXEC|O_NOCTTY), mode=KD_GRAPHICS;
+    if(fd<0) return 0;
+    int ready=ioctl(fd,KDGETMODE,&mode)==0 && mode==KD_TEXT;
+    if(active_vt!=vt.v_active) {
+        active_vt=vt.v_active; touch_cancel(&gesture); mods=0; release_all(); dirty=1;
+    }
+    if(ready && !resized[vt.v_active]) {
+        struct winsize size;
+        if(ioctl(fd,TIOCGWINSZ,&size)==0 && size.ws_row>0) {
+            saved_size[vt.v_active]=size;
+            struct console_font_op font_op={.op=KD_FONT_OP_GET};
+            if(ioctl(fd,KDFONTOP,&font_op)<0 || !font_op.height) {
+                close(fd); return 0; /* cannot reserve rows safely */
+            }
+            /* Absolute font metrics avoid shrinking again after a restart. */
+            unsigned rows=(unsigned)(full_height-kb_height)/font_op.height;
+            size.ws_row=(unsigned short)(rows?rows:1);
+            if(ioctl(fd,TIOCSWINSZ,&size)==0) resized[vt.v_active]=1;
+        }
+    }
+    close(fd); return ready;
 }
-
-void send_uinput_event(int row, int pressed)
+static int usable(int fd)
 {
-	if (pressed == 99)	// second page
-		layoutuse ^= 2;
-	else if (row == 1) {	// normal keys (abc, 123, !@#)
-		send_key(keys[row + (layoutuse >> 1)]
-			 [pressed]);
-	} else if (row == 3 && pressed == 0) {	// Left Shift
-		layoutuse ^= 1;
-		ie.type = EV_KEY;
-		ie.code = KEY_LEFTSHIFT;
-		ie.value = layoutuse & 1;
-		if (write(fduinput, &ie, sizeof(ie)) !=
-		    sizeof(ie))
-			fprintf(stderr,
-				"error sending uinput event\n");
-	} else if (row == 4 && pressed == 0) {	// Left Alt
-		altlock ^= 1;
-		ie.type = EV_KEY;
-		ie.code = KEY_LEFTALT;
-		ie.value = altlock;
-		if (write(fduinput, &ie, sizeof(ie)) !=
-		    sizeof(ie))
-			fprintf(stderr,
-				"error sending uinput event\n");
-	} else if (row == 4 && pressed == 2) {	// Right Ctrl
-		ctrllock ^= 1;
-		ie.type = EV_KEY;
-		ie.code = KEY_RIGHTCTRL;
-		ie.value = ctrllock;
-		if (write(fduinput, &ie, sizeof(ie)) !=
-		    sizeof(ie))
-			fprintf(stderr,
-				"error sending uinput event\n");
-	} else if (row == 5 && (pressed == 2 || pressed == 8)) {
-		/*
-		 * 隐藏九宫格的右上(2)/右下(8) 原本是 PageUp/PageDown。
-		 * 改成 Shift+PgUp / Shift+PgDn：Linux 虚拟终端用这两个组合
-		 * 上下滚动回滚缓冲（日志），比裸 PageUp/PageDown 有用。
-		 */
-		send_shift_key(pressed == 2 ? KEY_PAGEUP : KEY_PAGEDOWN);
-	} else {
-		send_key(keys[row][pressed]);
-	}
+    struct libevdev *candidate=NULL;
+    if(libevdev_new_from_fd(fd,&candidate)<0) return 0;
+    int ok=libevdev_has_event_code(candidate,EV_ABS,ABS_MT_TRACKING_ID) &&
+           libevdev_has_event_code(candidate,EV_ABS,ABS_MT_POSITION_X) &&
+           libevdev_has_event_code(candidate,EV_ABS,ABS_MT_POSITION_Y) &&
+           libevdev_get_num_slots(candidate)>0;
+    if(ok) {
+        const struct input_absinfo *x=libevdev_get_abs_info(candidate,ABS_MT_POSITION_X);
+        const struct input_absinfo *y=libevdev_get_abs_info(candidate,ABS_MT_POSITION_Y);
+        ok=x->maximum>x->minimum && y->maximum>y->minimum;
+    }
+    if(ok) { input=candidate; return 1; }
+    libevdev_free(candidate); return 0;
 }
-
-/*
- * return max of rows
- */
-int reset_window_size(int fd)
+static void cleanup(void)
 {
-	struct winsize win = { 0, 0, 0, 0 };
-
-	if (ioctl(fd, TIOCGWINSZ, &win)) {
-		if (errno != EINVAL) {
-			perror("error resetting window size");
-			return 0;
-		}
-		memset(&win, 0, sizeof(win));
-	}
-
-	win.ws_row += 2;
-	if (!ioctl(fd, TIOCSWINSZ, (char *) &win)) {
-		do {
-			win.ws_row *= landscape ? 4 : 3;
-			win.ws_row /= 2;
-		} while (!ioctl(fd, TIOCSWINSZ, (char *) &win));
-		do {
-			win.ws_row--;
-		} while (ioctl(fd, TIOCSWINSZ, (char *) &win));
-	}
-	return win.ws_row;
+    release_all();
+    if(uifd>=0) { ioctl(uifd,UI_DEV_DESTROY); close(uifd); }
+    for(int i=1;i<=MAX_NR_CONSOLES;i++) if(resized[i]) {
+        char path[32]; snprintf(path,sizeof(path),"/dev/tty%d",i);
+        int fd=open(path,O_RDWR|O_CLOEXEC|O_NOCTTY);
+        if(fd>=0) { ioctl(fd,TIOCSWINSZ,&saved_size[i]); close(fd); }
+    }
+    if(input) libevdev_free(input);
+    if(inputfd>=0) close(inputfd);
+    if(ttyfd>=0) close(ttyfd);
+    if(fbfd>=0) close(fbfd);
+    if(face) FT_Done_Face(face);
+    if(ft) FT_Done_FreeType(ft);
+    free(canvas);
 }
-
-void set_window_size(int fd)
+int main(int argc,char **argv)
 {
-	struct winsize win = { 0, 0, 0, 0 };
-	int rows;
-
-	rows = reset_window_size(fd);
-	if (ioctl(fd, TIOCGWINSZ, &win)) {
-		if (errno != EINVAL)
-			goto bail;
-		memset(&win, 0, sizeof(win));
-	}
-
-	win.ws_row *= 2;
-	win.ws_row /= landscape ? 4 : 3;
-	if (ioctl(fd, TIOCSWINSZ, (char *) &win))
-bail:
-		perror("error setting window size");
-}
-
-void term(int signum)
-{
-	done = 1;
-}
-
-int main(int argc, char *argv[])
-{
-	char *p = NULL;
-	int fbfd, fdinput, fdcons;
-	int tty = 0;
-	int resized[MAX_NR_CONSOLES + 1];
-	struct input_absinfo abs_x, abs_y;
-	FT_Library library;
-	int x, y, row = -1, pressed = -1, released, key;
-	unsigned long long now, hold_start = 0, last_repeat = 0;
-	int repeating = 0;
-	/*
-	 * 长按连发是否已经发过键。抬起释放模式下，按下不发键、抬起才发；
-	 * 但长按连发过的键在抬起时不能再发一次（否则会多出一个字符）。
-	 */
-	int repeated_sent = 0;
-	/*
-	 * 只有键盘外观真正变化时才重画。draw_keyboard() 里每个键都要跑一遍
-	 * FreeType 字形渲染，show_fbkeyboard() 每次要把整个键盘区（约 3 MB）
-	 * 写进 /dev/fb0；原来的循环每 REPEAT_POLL_MS 无条件各做一次，
-	 * 空转就吃掉约 30% CPU。redraw=1 表示本轮到需要重画（首次进入、
-	 * 外观变化、或切换 VT 后补画）。
-	 */
-	int redraw = 1;
-	int last_row = -1, last_pressed = -1;
-	int last_layoutuse = 0, last_ctrllock = 0, last_altlock = 0;
-
-	struct sigaction action;
-	struct vt_stat ttyinfo;
-
-	memset(&resized, 0, sizeof(resized));
-
-	fdcons = open("/dev/tty0", O_RDWR | O_NOCTTY);
-	if (fdcons < 0) {
-		perror("Error opening /dev/tty0");
-		exit(-1);
-	}
-
-	memset(&action, 0, sizeof(action));
-	action.sa_handler = term;
-	sigaction(SIGTERM, &action, NULL);
-	sigaction(SIGINT, &action, NULL);
-
-	char c;
-	while ((c = getopt(argc, argv, "d:f:r:h")) != (char) -1) {
-		switch (c) {
-		case 'd':
-			device = optarg;
-			break;
-		case 'f':
-			font = optarg;
-			break;
-		case 'r':
-			errno = 0;
-			rotate = strtol(optarg, &p, 10) % 4;
-			if (errno != 0 || p == optarg || p == NULL || *p != '\0') {
-				printf("Invalid numeric value for -r option\n");
-				exit(0);
-			}
-			break;
-		case 'h':
-			printf("usage: %s [options]\npossible options are:\n -h: print this help\n -d: set path to inputdevice\n -f: set path to font\n -r: set rotation\n",
-			     argv[0]);
-			exit(0);
-			break;
-		case '?':
-			fprintf(stderr, "unrecognized option -%c\n",
-				optopt);
-			break;
-		}
-	}
-
-	fbfd = open("/dev/fb0", O_RDWR);
-	if (fbfd == -1) {
-		perror("error: opening framebuffer device /dev/fb0");
-		exit(-1);
-	}
-	if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
-		perror("error: reading fixed framebuffer information");
-		exit(-1);
-	}
-	if (ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo) == -1) {
-		perror("error: reading variable framebuffer information");
-		exit(-1);
-	}
-	fbwidth = vinfo.xres;
-	fbheight = vinfo.yres;
-	fblinelength = finfo.line_length;
-	switch (rotate) {
-		case FB_ROTATE_UR:
-		case FB_ROTATE_UD:
-			landscape = fbheight < fbwidth;
-			width = fbwidth;
-			height = fbheight / (landscape ? 2 : 3) / 5;	// height of one row
-			trowh = height * 0x10000 / fbheight;
-			linelength = fblinelength;
-			buflen = linelength * (height * 5 + 1);
-			break;
-		case FB_ROTATE_CW:
-		case FB_ROTATE_CCW:
-			landscape = fbheight > fbwidth;
-			width = fbheight;
-			height = fbwidth / (landscape ? 2 : 3) / 5;	// height of one row
-			trowh = height * 0x10000 / fbwidth;
-			linelength = height * 5 * 4;
-			buflen = width * 4 * (height * 5 + 1);
-			break;
-	}
-
-	if (FT_Init_FreeType(&library)) {
-		perror("error: freetype initialization");
-		exit(-1);
-	}
-	if (FT_New_Face(library, font, 0, &face)) {
-		perror("unable to load font file");
-		exit(-1);
-	}
-	if (FT_Set_Pixel_Sizes(face, height * 1 / 4, height * 1 / 4)) {
-		perror("FT_Set_Pixel_Sizes failed");
-		exit(-1);
-	}
-
-	if (device) {
-		if ((fdinput = open(device, O_RDONLY)) == -1) {
-			perror("failed to open input device node");
-			exit(-1);
-		}
-	} else {
-		DIR *inputdevs = opendir("/dev/input");
-		struct dirent *dptr;
-		fdinput = -1;
-		while ((dptr = readdir(inputdevs))) {
-			if ((fdinput =
-			     openat(dirfd(inputdevs), dptr->d_name,
-				    O_RDONLY)) != -1
-			    && ioctl(fdinput, EVIOCGBIT(0, sizeof(key)),
-				     &key) != -1 && key >> EV_ABS & 1)
-				break;
-			if (fdinput != -1) {
-				close(fdinput);
-				fdinput = -1;
-			}
-		}
-		if (fdinput == -1) {
-			fprintf(stderr,
-				"no absolute axes device found in /dev/input\n");
-			exit(-1);
-		}
-	}
-	if ((ioctl(fdinput, EVIOCGABS(ABS_MT_POSITION_X), &abs_x) == -1) ||
-	    (ioctl(fdinput, EVIOCGABS(ABS_MT_POSITION_Y), &abs_y) == -1)) {
-		perror("error: getting touchscreen size");
-		exit(-1);
-	}
-	twidth = abs_x.maximum;
-	theight = abs_y.maximum;
-
-	fduinput = open("/dev/uinput", O_WRONLY);
-	if (fduinput == -1) {
-		perror("error: cannot open uinput device /dev/uinput");
-		exit(-1);
-	}
-	if (ioctl(fduinput, UI_SET_EVBIT, EV_KEY) == -1) {
-		perror("error: SET_EVBIT EV_KEY");
-		exit(-1);
-	}
-	if (ioctl(fduinput, UI_SET_EVBIT, EV_SYN) == -1) {
-		perror("error: SET_EVBIT EV_SYN");
-		exit(-1);
-	}
-	for (row = 0; row < 6; row++)
-		for (key = 0; key < sizeof(keys[row]); key++)
-			ioctl(fduinput, UI_SET_KEYBIT, keys[row][key]);
-	struct uinput_user_dev uidev;
-	memset(&uidev, 0, sizeof(uidev));
-	snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "fbkeyboard");
-	uidev.id.bustype = BUS_USB;
-	uidev.id.vendor = 1;
-	uidev.id.product = 1;
-	uidev.id.version = 1;
-	if (write(fduinput, &uidev, sizeof(uidev)) != sizeof(uidev)) {
-		fprintf(stderr, "error setting up uinput\n");
-		exit(-1);
-	}
-	if (ioctl(fduinput, UI_DEV_CREATE) == -1) {
-		perror("error creating uinput dev");
-		exit(-1);
-	}
-
-	buf = malloc(buflen);
-	if (buf == 0) {
-		perror("malloc failed");
-		exit(-1);
-	}
-	fill_rect(0, 0, width - 1, height * 5, TERMCOLOR);
-
-
-	while (!done) {
-		if (!ioctl(fdcons, VT_GETSTATE, &ttyinfo)) {
-			if (tty != ttyinfo.v_active) {
-				tty = ttyinfo.v_active;
-				close(fdcons);
-				fdcons = open("/dev/tty0", O_RDWR | O_NOCTTY);
-				set_window_size(fdcons);
-				resized[tty] = 1;
-				/* 切 VT 后控制台会重画，键盘覆盖层需要补画 */
-				redraw = 1;
-			}
-		} else {
-			perror("VT_GETSTATE ioctl failed");
-		}
-
-		/*
-		 * 只有按下/抬起的键、或 Shift/Ctrl/Alt 等修饰键状态变化时
-		 * 才重画键盘，其余时间让 poll 阻塞等待触摸事件，CPU 保持空闲。
-		 */
-		if (row != last_row || pressed != last_pressed ||
-		    layoutuse != last_layoutuse || ctrllock != last_ctrllock ||
-		    altlock != last_altlock)
-			redraw = 1;
-
-		if (redraw) {
-			draw_keyboard(row, pressed);
-			show_fbkeyboard(fbfd);
-			last_row = row;
-			last_pressed = pressed;
-			last_layoutuse = layoutuse;
-			last_ctrllock = ctrllock;
-			last_altlock = altlock;
-			redraw = 0;
-		}
-
-		released = check_input_events(fdinput, &x, &y, REPEAT_POLL_MS);
-		now = now_ms();
-
-		if (released == 1) {
-			/*
-			 * 手指抬起：这时才发键（与 mix2s 的 fbkeyboard 相同）。
-			 * 按下只高亮，抬手位置所在的那个键才是真正输入的键；
-			 * 手指滑出键盘时 pressed 已经是 -1，抬手不会发键。
-			 */
-			if (pressed != -1 && !repeated_sent)
-				send_uinput_event(row, pressed);
-			pressed = -1;
-			repeating = 0;
-			repeated_sent = 0;
-			continue;
-		}
-
-		if (released == 2) {
-			/*
-			 * 内核丢了事件（SYN_DROPPED），抬手很可能就在丢掉的那
-			 * 一段里。只清高亮，绝不补发字符，否则会凭空多出字符。
-			 */
-			pressed = -1;
-			repeating = 0;
-			repeated_sent = 0;
-			continue;
-		}
-
-		if (released == 0) {
-			/*
-			 * 按下或滑动：只更新高亮，等手指抬起再发键。
-			 * 换到别的键就重置长按计时，避免滑过去立刻连发。
-			 */
-			int newrow = row, newpressed = -1;
-
-			identify_touched_key(x, y, &newrow, &newpressed);
-			if (newrow != row || newpressed != pressed) {
-				row = newrow;
-				pressed = newpressed;
-				hold_start = now;
-				repeating = 0;
-				repeated_sent = 0;
-			}
-			continue;
-		}
-
-		/* released == -1：手指停在键上没动，检查是否要长按连发 */
-		if (pressed != -1 && is_repeat_key(row, pressed)) {
-			if (!repeating) {
-				if (now - hold_start >= REPEAT_DELAY_MS) {
-					send_uinput_event(row, pressed);
-					repeating = 1;
-					repeated_sent = 1;
-					last_repeat = now;
-				}
-			} else if (now - last_repeat >= REPEAT_INTERVAL_MS) {
-				send_uinput_event(row, pressed);
-				last_repeat = now;
-			}
-		}
-	}
-
-	int i;
-	char buf[12];
-	for (i = 1; i <= MAX_NR_CONSOLES; i++) {
-		snprintf(buf, 12, "/dev/tty%d", i);
-		if (resized[i]) {
-			close(fdcons);
-			fdcons = open(buf, O_RDWR | O_NOCTTY);
-			if (fdcons < 0) {
-				perror("Error opening /dev/tty[i]");
-				exit(-1);
-			}
-			reset_window_size(fdcons);
-		}
-	}
+    const char *device=NULL,*font="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    int option; rotation=-1;
+    while((option=getopt(argc,argv,"d:f:r:h"))!=-1) {
+        if(option=='h') { puts("fbkeyboard [-d /dev/input/eventN] [-f font.ttf] [-r 0..3]\nSeven visible rows; one-shot modifiers; hold capped at 3 seconds."); return 0; }
+        if(option=='d') device=optarg;
+        else if(option=='f') font=optarg;
+        else if(option=='r') {
+            char *end; long value=strtol(optarg,&end,10);
+            if(*optarg=='\0' || *end || value<0 || value>3) { fputs("rotation must be 0..3\n",stderr); return 2; }
+            rotation=(int)value;
+        } else return 2;
+    }
+    atexit(cleanup); signal(SIGTERM,stop); signal(SIGINT,stop); signal(SIGHUP,stop);
+    touch_cancel(&gesture);
+    if(rotation<0) {
+        FILE *f=fopen("/sys/class/graphics/fbcon/rotate","r"); rotation=0;
+        if(f) { if(fscanf(f,"%d",&rotation)!=1 || rotation<0 || rotation>3) rotation=0; fclose(f); }
+    }
+    fbfd=open("/dev/fb0",O_RDWR|O_CLOEXEC);
+    if(fbfd<0 || ioctl(fbfd,FBIOGET_FSCREENINFO,&fix)<0 || ioctl(fbfd,FBIOGET_VSCREENINFO,&var)<0) fail("framebuffer");
+    if(var.bits_per_pixel!=32 || var.red.length<1 || var.red.length>8 || var.green.length<1 || var.green.length>8 || var.blue.length<1 || var.blue.length>8 || var.red.offset+var.red.length>32 || var.green.offset+var.green.length>32 || var.blue.offset+var.blue.length>32 || var.xres<240 || var.yres<240 || var.xres>16384 || var.yres>16384) {
+        fputs("Requires a 32-bit RGB framebuffer, dimensions 240..16384\n",stderr); return 1;
+    }
+    if((uint64_t)(var.xoffset+var.xres)*4>fix.line_length ||
+       (uint64_t)(var.yoffset+var.yres)*fix.line_length>fix.smem_len) { fputs("Invalid framebuffer stride/offset\n",stderr); return 1; }
+    screen_w=(int)var.xres; screen_h=(int)var.yres;
+    width=(rotation&1)?screen_h:screen_w; full_height=(rotation&1)?screen_w:screen_h;
+    key_height=full_height/(width>full_height?2:3)/ROWS;
+    kb_height=key_height*ROWS;
+    canvas=calloc((size_t)width*kb_height,sizeof(*canvas));
+    if(!canvas) fail("keyboard buffer");
+    if(FT_Init_FreeType(&ft) || FT_New_Face(ft,font,0,&face)) { fputs("Cannot load font\n",stderr); return 1; }
+    ttyfd=open("/dev/tty0",O_RDWR|O_CLOEXEC|O_NOCTTY);
+    if(ttyfd<0) fail("tty0");
+    if(device) {
+        inputfd=open(device,O_RDONLY|O_NONBLOCK|O_CLOEXEC);
+        if(inputfd<0 || !usable(inputfd)) { fputs("Not a valid multitouch slot device\n",stderr); return 1; }
+    } else {
+        glob_t paths;
+        if(glob("/dev/input/event*",0,NULL,&paths)!=0) { fputs("No input devices\n",stderr); return 1; }
+        for(size_t i=0;i<paths.gl_pathc;i++) {
+            int fd=open(paths.gl_pathv[i],O_RDONLY|O_NONBLOCK|O_CLOEXEC);
+            if(fd<0) continue;
+            if(usable(fd)) { inputfd=fd; break; }
+            close(fd);
+        }
+        globfree(&paths);
+        if(inputfd<0) { fputs("No multitouch touchscreen found\n",stderr); return 1; }
+    }
+    fprintf(stderr,"Touchscreen: %s; rotation %d\n",libevdev_get_name(input),rotation);
+    uifd=open("/dev/uinput",O_WRONLY|O_CLOEXEC);
+    if(uifd<0) fail("uinput");
+    if(ioctl(uifd,UI_SET_EVBIT,EV_KEY)<0) fail("uinput EV_KEY");
+    unsigned char supported[KEY_MAX+1]={0};
+    supported[KEY_LEFTSHIFT]=supported[KEY_LEFTCTRL]=supported[KEY_LEFTALT]=1;
+    for(int p=0;p<3;p++) {
+        page=p;
+        for(int i=0;i<ROWS*COLS;i++) {
+            unsigned code=key_at(i).code;
+            if(code && code<=KEY_MAX) supported[code]=1;
+        }
+    }
+    page=0;
+    for(unsigned code=1;code<=KEY_MAX;code++)
+        if(supported[code] && ioctl(uifd,UI_SET_KEYBIT,code)<0) fail("uinput key capability");
+    struct uinput_setup setup={.id={.bustype=BUS_VIRTUAL,.vendor=1,.product=1,.version=2}};
+    snprintf(setup.name,sizeof(setup.name),"fbkeyboard");
+    if(ioctl(uifd,UI_DEV_SETUP,&setup)<0 || ioctl(uifd,UI_DEV_CREATE)<0) fail("create uinput");
+    int was_ready=-1, at_sync=1;
+    while(!stopped) {
+        int ready=console_ready();
+        if(ready!=was_ready) { touch_cancel(&gesture); mods=0; release_all(); dirty=1; }
+        was_ready=ready;
+        struct pollfd pfd={.fd=inputfd,.events=POLLIN};
+        int rc=poll(&pfd,1,50);
+        if(rc<0 && errno!=EINTR) fail("poll touchscreen");
+        if(pfd.revents&(POLLERR|POLLHUP|POLLNVAL)) { fputs("Touchscreen disconnected\n",stderr); return 1; }
+        struct input_event event;
+        int budget=512;
+        while(budget-- && (rc=libevdev_next_event(input,LIBEVDEV_READ_FLAG_NORMAL,&event))>=0) {
+            if(rc==LIBEVDEV_READ_STATUS_SYNC) {
+                touch_cancel(&gesture); mods=0; release_all(); dirty=1;
+                do rc=libevdev_next_event(input,LIBEVDEV_READ_FLAG_SYNC,&event);
+                while(rc==LIBEVDEV_READ_STATUS_SYNC);
+                if(rc<0 && rc!=-EAGAIN) { errno=-rc; fail("sync touchscreen"); }
+                at_sync=1;
+                continue;
+            }
+            at_sync=event.type==EV_SYN && event.code==SYN_REPORT;
+            if(ready && at_sync) frame();
+        }
+        if(rc<0 && rc!=-EAGAIN && rc!=-EINTR) { errno=-rc; fail("read touchscreen"); }
+        /* Timer also bounds repeats when the finger is motionless. */
+        if(ready) { if(at_sync && rc==-EAGAIN) frame(); if(dirty) draw(); }
+    }
+    return 0;
 }

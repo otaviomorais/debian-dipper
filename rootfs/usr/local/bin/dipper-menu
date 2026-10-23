@@ -1,0 +1,38 @@
+#!/bin/bash
+set -u
+command -v dialog >/dev/null || { echo 'Instale dialog primeiro.' >&2; exit 1; }
+notice() { dialog --title 'Dipper Console' --msgbox "$1" 0 0; }
+while true; do
+    choice=$(dialog --clear --title 'Dipper Console' --cancel-label 'Voltar' \
+        --menu 'Setas + Enter. Tab alterna os botões.' 0 0 0 \
+        terminal 'Abrir outro terminal' \
+        rede 'Wi-Fi, conexões e IP (nmtui)' \
+        monitor 'CPU, memória e processos (htop)' \
+        arquivos 'Gerenciador de arquivos (mc)' \
+        info 'Bateria, rede, memória e kernel' \
+        ajuda 'Atalhos, copiar e colar' \
+        sair 'Voltar ao terminal' 3>&1 1>&2 2>&3) || break
+    clear
+    case "$choice" in
+        terminal)
+            if [ -n "${TMUX:-}" ]; then tmux new-window -n Terminal
+            else "${SHELL:-/bin/bash}"; fi ;;
+        rede)
+            if command -v nmtui >/dev/null; then nmtui
+            else notice 'Instale network-manager para usar nmtui.'; fi ;;
+        monitor)
+            if command -v htop >/dev/null; then htop
+            else notice 'Instale htop.'; fi ;;
+        arquivos)
+            if command -v mc >/dev/null; then mc
+            else notice 'Instale mc.'; fi ;;
+        info)
+            information=$(printf '%s\n\n' "$(/usr/local/bin/dipper-status)"; uname -r; uptime; free -h)
+            dialog --title 'Sistema' --msgbox "$information" 0 0 ;;
+        ajuda)
+            dialog --title 'Teclado e área de transferência' --msgbox \
+                'Menu/F1: configurações; New/F2: terminal\nPrev/F3 e Next/F4: trocar janela\nSplit/F5: dividir; Zoom/F6: ampliar\nPane/F7: trocar painel\nHist/F8: histórico; setas posicionam o cursor\nSelect/F10: iniciar seleção; setas ampliam\nCopy/F11: copiar seleção e voltar ao terminal\nPaste/F12: colar no terminal atual\nCancel/Esc: cancelar seleção\nA cópia vale entre janelas deste tmux.\nCtrl+C interrompe comandos, não copia.\nShift/Ctrl/Alt: valem para a próxima tecla.\nReset: limpar modificadores. 123: símbolos; Fn: F1–F12.\nArrastar para fora da tecla cancela o toque.' 0 0 ;;
+        sair) break ;;
+    esac
+done
+clear

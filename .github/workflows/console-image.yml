@@ -1,0 +1,56 @@
+name: Build factory console image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install image build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support android-sdk-libsparse-utils e2fsprogs p7zip-full
+          sudo bash scripts/enable-arm64-binfmt.sh
+      - name: Download and verify original dipper base
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir base
+          release=https://github.com/2114460639/debian-dipper/releases/download/v1.0
+          curl --fail --location --retry 3 "$release/debian-dipper-flash-console.7z.sha256" -o base/original.sha256
+          curl --fail --location --retry 3 "$release/debian-dipper-flash-console.7z" -o base/debian-dipper-flash-console.7z
+          python3 - <<'PY'
+          import hashlib, pathlib, re
+          root = pathlib.Path('base')
+          manifest = (root / 'original.sha256').read_text().strip()
+          match = re.fullmatch(r'([0-9a-fA-F]{64})\s+\*?debian-dipper-flash-console\.7z', manifest)
+          if not match:
+              raise SystemExit('Unexpected release checksum format')
+          digest = hashlib.file_digest((root / 'debian-dipper-flash-console.7z').open('rb'), 'sha256').hexdigest()
+          if digest != match.group(1).lower():
+              raise SystemExit('Original release checksum failed')
+          PY
+          7z e base/debian-dipper-flash-console.7z -obase -y -r boot.img xiaomi-dipper.img
+          test -s base/boot.img
+          test -s base/xiaomi-dipper.img
+          rm base/debian-dipper-flash-console.7z
+      - name: Bake console into rootfs and generate flash images
+        run: |
+          sudo make image BASE_ROOTFS="$PWD/base/xiaomi-dipper.img" BOOT_IMAGE="$PWD/base/boot.img" OUTPUT_DIR="$PWD/out/factory-console"
+      - name: Upload image bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: dipper-factory-console
+          path: |
+            out/factory-console/images/
+            out/factory-console/flash.sh
+            out/factory-console/README.txt
+            out/factory-console/BASE-INPUTS.sha256
+          compression-level: 0
+          retention-days: 7

@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Small, offline tmux status; never reads Wi-Fi credentials or invokes nmcli."""
+import os
+import socket
+import struct
+import fcntl
+from pathlib import Path
+
+
+def read(path):
+    try:
+        return Path(path).read_text().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def battery(root=Path("/sys/class/power_supply")):
+    for item in sorted(root.glob("*")):
+        if read(item / "type") != "Battery":
+            continue
+        capacity = read(item / "capacity")
+        if not capacity.isdigit():
+            continue
+        marker = "+" if read(item / "status") == "Charging" else ""
+        return f"BAT {min(100, int(capacity))}%{marker}"
+    return "BAT --"
+
+
+def network(root=Path("/sys/class/net"), routes=Path("/proc/net/route")):
+    interfaces = []
+    for line in read(routes).splitlines()[1:]:
+        fields = line.split()
+        if len(fields) > 3 and fields[1] == "00000000":
+            try:
+                if int(fields[3], 16) & 1:
+                    interfaces.append(fields[0])
+            except ValueError:
+                pass
+    interfaces += [p.name for p in sorted(root.glob("*")) if p.name != "lo"]
+    for name in dict.fromkeys(interfaces):
+        if read(root / name / "operstate") not in ("up", "unknown"):
+            continue
+        # Interface names are rendered as text, never as tmux format directives.
+        safe = "".join(c for c in name if c.isalnum() or c in "_.-")[:15]
+        address = ""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+                data = fcntl.ioctl(connection, 0x8915, struct.pack("256s", os.fsencode(name)[:15]))
+                address = socket.inet_ntoa(data[20:24])
+        except OSError:
+            pass
+        kind = "WiFi" if (root / name / "wireless").exists() else "NET"
+        return f"{kind} {safe}" + (f" {address}" if address else "")
+    return "NET offline"
+
+
+if __name__ == "__main__":
+    print(f"{battery()} | {network()}")

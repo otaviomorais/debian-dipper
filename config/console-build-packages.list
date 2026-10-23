@@ -1,0 +1,5 @@
+# Build-only packages; the image builder removes additions after compilation.
+build-essential
+pkg-config
+libfreetype-dev
+libevdev-dev
