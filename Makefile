@@ -16,6 +16,7 @@ check: keyboard
 	$(MAKE) -C fbkeyboard check
 	python3 scripts/test_console.py -v
 	python3 scripts/test_factory.py -v
+	python3 scripts/test_haptics_boot.py -v
 
 rootfs:
 	@test -n "$(ROOTFS_DIR)" || { echo 'Set ROOTFS_DIR to a staging rootfs'; exit 1; }

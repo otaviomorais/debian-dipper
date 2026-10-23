@@ -124,8 +124,16 @@ static void test_frames(void)
     assert(!libevdev_enable_event_code(input,EV_ABS,ABS_MT_POSITION_Y,&y));
     screen_w=1080;screen_h=2248;rotation=0;width=screen_w;full_height=screen_h;
     kb_height=full_height*34/100;layout();
+    /* Gaps between visible keys must accept a nearby key, while the terminal
+       above the keyboard and the staggered row margins remain untouchable. */
+    struct box q=boxes[key_index(KEY_Q)], w=boxes[key_index(KEY_W)];
+    int gapx=(q.x+q.w+w.x)/2;
+    int gapy=full_height-kb_height+q.y+q.h/2;
+    int gapkey=hit(100+gapx*1000/(screen_w-1),-50+gapy*1000/(screen_h-1));
+    assert(gapkey==key_index(KEY_Q) || gapkey==key_index(KEY_W));
+    assert(hit(600,-50)<0);
     for(int i=0;i<2;i++) assert(!libevdev_set_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID,-1));
-    touch_reset(&gesture);
+    cancel_contacts();
     int pipes[2];assert(!pipe(pipes));uifd=pipes[1];
     /* down+up queued together, same coordinate tapped twice */
     for(int i=0;i<2;i++) {
@@ -148,25 +156,45 @@ static void test_frames(void)
     /* An aggregate up overrides a stale, still-active MT slot. */
     libevdev_set_event_value(input,EV_KEY,BTN_TOUCH,0); frame();
     assert(gesture.id<0 && !gesture.blocked && highlight<0);
-    assert(libevdev_get_slot_value(input,0,ABS_MT_TRACKING_ID)==-1);
+    assert(libevdev_get_slot_value(input,0,ABS_MT_TRACKING_ID)==201);
+    assert(contacts[0].blocked);
     libevdev_set_event_value(input,EV_KEY,BTN_TOUCH,1);
     libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,202); frame();
     /* Re-reading a held contact never emits a second key. */
     for(int i=0;i<20;i++) frame();
-    last_touch_report=gesture.started=100;
-    recover_touch(349); assert(gesture.id==202);
-    recover_touch(350); assert(gesture.id<0 && !gesture.blocked);
-    frame(); /* lingering motion with no new tracking ID must not retype */
+    /* Holding past the old 250/500 ms watchdog must not mutate kernel state. */
+    touch_frame(&contacts[0],1,202,contacts[0].key,milliseconds()+30000);
+    frame();
+    assert(libevdev_get_slot_value(input,0,ABS_MT_TRACKING_ID)==202);
+    struct box right=boxes[key_index(KEY_RIGHT)];
+    libevdev_set_slot_value(input,1,ABS_MT_POSITION_X,100+(right.x+right.w/2)*1000/(screen_w-1));
+    libevdev_set_slot_value(input,1,ABS_MT_POSITION_Y,-50+(full_height-kb_height+right.y+right.h/2)*1000/(screen_h-1));
+    libevdev_set_slot_value(input,1,ABS_MT_TRACKING_ID,300); frame();
     libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,203); frame();
-    touch_frame(&gesture,2,204,51,400);
-    last_touch_report=800;
-    recover_touch(900); /* even continuous noise cannot latch a blocked state */
-    assert(!gesture.blocked && gesture.id<0);
+    libevdev_set_slot_value(input,1,ABS_MT_TRACKING_ID,-1); frame();
+    libevdev_set_event_value(input,EV_KEY,BTN_TOUCH,0); frame();
+    libevdev_set_event_value(input,EV_KEY,BTN_TOUCH,1);
+    libevdev_set_event_value(input,EV_ABS,ABS_MT_SLOT,0);
+    struct input_event down={.type=EV_ABS,.code=ABS_MT_TRACKING_ID,.value=203};
+    contact_event(&down); frame(); /* explicit fresh down may reuse the ID */
+    cancel_contacts(); frame(); /* snapshot after SYN_DROPPED must not type */
+    libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,204); frame();
+    struct box akey=boxes[key_index(KEY_A)];
+    libevdev_set_slot_value(input,0,ABS_MT_POSITION_X,100);
+    libevdev_set_slot_value(input,0,ABS_MT_POSITION_Y,-50+(full_height-kb_height+akey.y+akey.h/2)*1000/(screen_h-1));
+    libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,205); frame();
+    assert(!contacts[0].emitted); /* begins beyond the staggered A-row edge */
+    struct box left=boxes[key_index(KEY_LEFT)];
+    libevdev_set_slot_value(input,0,ABS_MT_POSITION_X,100+(left.x+left.w/2)*1000/(screen_w-1));
+    libevdev_set_slot_value(input,0,ABS_MT_POSITION_Y,-50+(full_height-kb_height+left.y+left.h/2)*1000/(screen_h-1));
+    frame(); /* first valid coordinate is accepted on the same contact */
     close(pipes[1]);uifd=-1;
-    struct input_event e;int presses=0;
-    while(read(pipes[0],&e,sizeof(e))==(ssize_t)sizeof(e))
+    struct input_event e;int presses=0,rights=0;
+    while(read(pipes[0],&e,sizeof(e))==(ssize_t)sizeof(e)) {
         if(e.type==EV_KEY && e.code==KEY_LEFT && e.value==1) presses++;
-    assert(presses==6);close(pipes[0]);
+        if(e.type==EV_KEY && e.code==KEY_RIGHT && e.value==1) rights++;
+    }
+    assert(presses==9 && rights==1);close(pipes[0]);
     for(int r=0;r<4;r++) {
         rotation=r;width=(r&1)?screen_h:screen_w;full_height=(r&1)?screen_w:screen_h;
         kb_height=full_height*(width>full_height?47:34)/100;layout();

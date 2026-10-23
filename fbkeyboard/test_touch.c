@@ -37,6 +37,14 @@ int main(void)
     assert(touch_frame(&s,1,154,10,31009)==TOUCH_NONE);
     assert(touch_frame(&s,0,-1,-1,31010)==TOUCH_NONE);
     assert(touch_frame(&s,1,155,10,31011)==TOUCH_TAP);
+    touch_reset(&s);
+    assert(touch_frame(&s,1,160,-1,32000)==TOUCH_NONE);
+    assert(touch_frame(&s,1,160,12,32020)==TOUCH_TAP);
+    assert(touch_frame(&s,1,160,13,32030)==TOUCH_NONE);
+    touch_reset(&s);
+    assert(touch_frame(&s,1,170,-1,33000)==TOUCH_NONE);
+    assert(touch_frame(&s,1,170,12,33300)==TOUCH_NONE);
+    assert(touch_frame(&s,1,171,12,33310)==TOUCH_TAP);
     puts("touch: press once, 40 rapid taps, missing up, no timer repeats, slide recovery, multi-touch and sync cancellation: OK");
     return 0;
 }

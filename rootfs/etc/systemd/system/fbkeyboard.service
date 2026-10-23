@@ -8,6 +8,7 @@ Type=exec
 # Debian 的 DejaVu 字体路径与 Alpine 不同（/usr/share/fonts/truetype/dejavu/）
 ExecStart=/usr/bin/fbkeyboard -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 ExecStartPre=-modprobe uinput
+ExecStartPre=-modprobe qcom-spmi-haptics
 Restart=always
 RestartSec=1s
 

@@ -3,7 +3,7 @@
 #define FBKEYBOARD_TOUCH_H
 #include <stdint.h>
 struct touch_state {
-    int id, key, blocked;
+    int id, key, blocked, emitted;
     uint64_t started;
 };
 enum { TOUCH_NONE = 0, TOUCH_TAP = 1 };

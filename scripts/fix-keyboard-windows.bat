@@ -18,13 +18,13 @@ if errorlevel 1 (
   exit /b 1
 )
 "%DIPPER_ADB%" shell "systemctl status fbkeyboard --no-pager -l; journalctl -b -u fbkeyboard --no-pager -n 40" > diagnostico-antes.txt 2>&1
-"%DIPPER_ADB%" shell "mkdir -p /tmp/dipper-keyboard-fix-v0.1.2"
+"%DIPPER_ADB%" shell "mkdir -p /tmp/dipper-keyboard-fix-v0.1.3"
 if errorlevel 1 goto failed
-for %%F in (fbkeyboard-arm64 SHA256SUMS apply-keyboard-fix.sh tmux.conf safe-area.conf issue) do (
-  "%DIPPER_ADB%" push "payload\%%F" /tmp/dipper-keyboard-fix-v0.1.2/
+for %%F in (fbkeyboard-arm64 SHA256SUMS apply-keyboard-fix.sh tmux.conf safe-area.conf issue fbkeyboard.service) do (
+  "%DIPPER_ADB%" push "payload\%%F" /tmp/dipper-keyboard-fix-v0.1.3/
   if errorlevel 1 goto failed
 )
-"%DIPPER_ADB%" shell "chmod 755 /tmp/dipper-keyboard-fix-v0.1.2/fbkeyboard-arm64; sh /tmp/dipper-keyboard-fix-v0.1.2/apply-keyboard-fix.sh" > diagnostico-correcao.txt 2>&1
+"%DIPPER_ADB%" shell "chmod 755 /tmp/dipper-keyboard-fix-v0.1.3/fbkeyboard-arm64; sh /tmp/dipper-keyboard-fix-v0.1.3/apply-keyboard-fix.sh" > diagnostico-correcao.txt 2>&1
 type diagnostico-correcao.txt
 findstr /x /c:"DIPPER_KEYBOARD_FIX_OK" diagnostico-correcao.txt >nul
 if errorlevel 1 goto failed

@@ -26,9 +26,11 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include "touch.h"
+#include "haptics.h"
 
 #define ROWS 6
 #define COLS 10
+#define TOUCH_SLOTS 128
 #define MOD_SHIFT 1
 #define MOD_CTRL 2
 #define MOD_ALT 4
@@ -67,7 +69,6 @@ static int fbfd=-1, uifd=-1, ttyfd=-1, inputfd=-1, rotation;
 static int screen_w, screen_h, width, full_height, kb_height, page, mods;
 static int highlight=-1;
 static uint64_t modifier_started;
-static uint64_t last_touch_report;
 static struct fb_fix_screeninfo fix;
 static struct fb_var_screeninfo var;
 static uint32_t *canvas;
@@ -78,6 +79,8 @@ static struct winsize saved_size[MAX_NR_CONSOLES+1];
 static unsigned char resized[MAX_NR_CONSOLES+1];
 static unsigned char resize_warning[MAX_NR_CONSOLES+1];
 static struct touch_state gesture;
+static struct touch_state contacts[TOUCH_SLOTS];
+static struct haptics vibration=HAPTICS_INITIALIZER;
 static int dirty=1, active_vt=-1;
 
 static uint64_t milliseconds(void)
@@ -162,8 +165,11 @@ static void dispatch(int index)
     case ACT_NUM: page=page==1?0:1; mods=0; break;
     case ACT_FN: page=page==2?0:2; mods=0; break;
     case ACT_RESET: mods=0; page=0; release_all(); break;
-    default: tap(k.code,(unsigned)mods|(k.shift?MOD_SHIFT:0)); mods=0; break;
+    default:
+        if(tap(k.code,(unsigned)mods|(k.shift?MOD_SHIFT:0))<0) return;
+        mods=0; break;
     }
+    haptics_pulse(&vibration,milliseconds());
     modifier_started=milliseconds();
     dirty=1;
 }
@@ -309,11 +315,18 @@ static int hit(int ax,int ay)
     if(rotation==3) { lx=screen_h-1-(int)y; ly=(int)x; }
     ly-=full_height-kb_height;
     if(ly<0 || ly>=kb_height) return -1;
+    int best=-1,distance=INT_MAX;
     for(int i=0;i<ROWS*COLS;i++) {
         struct box b=boxes[i];
-        if(b.w && lx>=b.x && lx<b.x+b.w && ly>=b.y && ly<b.y+b.h) return i;
+        if(!b.w) continue;
+        int dx=lx<b.x?b.x-lx:lx>=b.x+b.w?lx-(b.x+b.w-1):0;
+        int dy=ly<b.y?b.y-ly:ly>=b.y+b.h?ly-(b.y+b.h-1):0;
+        int d=dx*dx+dy*dy;
+        if(d<distance) { distance=d; best=i; }
     }
-    return -1;
+    int tolerance=width/60;
+    if(tolerance<4) tolerance=4;
+    return distance<=tolerance*tolerance?best:-1;
 }
 static void feedback(uint64_t now)
 {
@@ -323,36 +336,46 @@ static void feedback(uint64_t now)
 }
 static void frame(void)
 {
-    int count=0,id=-1,key=-1;
-    /* BTN_TOUCH is the aggregate hardware state. Some drivers can leave stale
-       slot IDs after the final lift; don't let those slots latch the UI. */
+    uint64_t now=milliseconds();
     int up=libevdev_has_event_code(input,EV_KEY,BTN_TOUCH) &&
            !libevdev_get_event_value(input,EV_KEY,BTN_TOUCH);
-    if(up) for(int i=0;i<libevdev_get_num_slots(input);i++)
-        libevdev_set_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID,-1);
-    if(!up) for(int i=0;i<libevdev_get_num_slots(input);i++) {
+    for(int i=0;i<libevdev_get_num_slots(input);i++) {
         int tracking=libevdev_get_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID);
-        if(tracking<0) continue;
-        count++; id=tracking;
-        key=hit(libevdev_get_slot_value(input,(unsigned)i,ABS_MT_POSITION_X),
+        if(up) {
+            touch_reset(&contacts[i]);
+            contacts[i].id=tracking;
+            touch_cancel(&contacts[i]); /* quarantine stale slots, not the next finger */
+            continue;
+        }
+        int key=tracking<0?-1:hit(libevdev_get_slot_value(input,(unsigned)i,ABS_MT_POSITION_X),
                 libevdev_get_slot_value(input,(unsigned)i,ABS_MT_POSITION_Y));
+        if(touch_frame(&contacts[i],tracking>=0,tracking,key,now)) {
+            gesture=contacts[i];
+            dispatch(contacts[i].key);
+        }
     }
-    uint64_t now=milliseconds();
-    if(touch_frame(&gesture,count,id,key,now)) dispatch(gesture.key);
+    if(up) touch_reset(&gesture);
     feedback(now);
 }
-static void recover_touch(uint64_t now)
+static void cancel_contacts(void)
 {
-    /* A finger already emitted its key. Retire quiet contacts locally; later
-       motion without a fresh TRACKING_ID cannot type a phantom second key.
-       This also unlocks a stale multi-slot/sync state after a missing lift. */
-    if((gesture.id>=0 || gesture.blocked) &&
-       ((now>=last_touch_report && now-last_touch_report>=250) ||
-        (now>=gesture.started && now-gesture.started>=500))) {
-        for(int i=0;i<libevdev_get_num_slots(input);i++)
-            libevdev_set_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID,-1);
-        touch_reset(&gesture);
-        feedback(now);
+    for(int i=0;i<TOUCH_SLOTS;i++) {
+        touch_reset(&contacts[i]);
+        if(input && i<libevdev_get_num_slots(input)) {
+            contacts[i].id=libevdev_get_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID);
+            touch_cancel(&contacts[i]);
+        }
+    }
+    touch_reset(&gesture);
+    highlight=-1; dirty=1;
+}
+static void contact_event(const struct input_event *event)
+{
+    if(event->type==EV_ABS && event->code==ABS_MT_TRACKING_ID && event->value>=0) {
+        int slot=libevdev_get_current_slot(input);
+        /* An explicit new down may reuse an ID after aggregate finger-up. */
+        if(slot>=0 && slot<TOUCH_SLOTS && contacts[slot].blocked)
+            touch_reset(&contacts[slot]);
     }
 }
 static int console_ready(void)
@@ -364,7 +387,7 @@ static int console_ready(void)
     if(fd<0) return 0;
     int ready=ioctl(fd,KDGETMODE,&mode)==0 && mode==KD_TEXT;
     if(active_vt!=vt.v_active) {
-        active_vt=vt.v_active; touch_cancel(&gesture); mods=0; release_all(); dirty=1;
+        active_vt=vt.v_active; cancel_contacts(); mods=0; release_all(); dirty=1;
     }
     if(ready && !resized[vt.v_active]) {
         struct winsize size;
@@ -401,7 +424,7 @@ static int usable(int fd)
     int ok=libevdev_has_event_code(candidate,EV_ABS,ABS_MT_TRACKING_ID) &&
            libevdev_has_event_code(candidate,EV_ABS,ABS_MT_POSITION_X) &&
            libevdev_has_event_code(candidate,EV_ABS,ABS_MT_POSITION_Y) &&
-           libevdev_get_num_slots(candidate)>0;
+           libevdev_get_num_slots(candidate)>0 && libevdev_get_num_slots(candidate)<=TOUCH_SLOTS;
     if(ok) {
         const struct input_absinfo *x=libevdev_get_abs_info(candidate,ABS_MT_POSITION_X);
         const struct input_absinfo *y=libevdev_get_abs_info(candidate,ABS_MT_POSITION_Y);
@@ -412,6 +435,7 @@ static int usable(int fd)
 }
 static void cleanup(void)
 {
+    haptics_close(&vibration);
     release_all();
     if(uifd>=0) { ioctl(uifd,UI_DEV_DESTROY); close(uifd); }
     for(int i=1;i<=MAX_NR_CONSOLES;i++) if(resized[i]) {
@@ -430,19 +454,24 @@ static void cleanup(void)
 int main(int argc,char **argv)
 {
     const char *device=NULL,*font="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    unsigned haptic_ms=20;
     int option; rotation=-1;
-    while((option=getopt(argc,argv,"d:f:r:h"))!=-1) {
-        if(option=='h') { puts("fbkeyboard [-d /dev/input/eventN] [-f font.ttf] [-r 0..3]\nSix rows; one contact = one key; no automatic repeat; notch-safe console."); return 0; }
+    while((option=getopt(argc,argv,"d:f:r:v:h"))!=-1) {
+        if(option=='h') { puts("fbkeyboard v0.1.3 [-d /dev/input/eventN] [-f font.ttf] [-r 0..3] [-v 0..50 ms]\nSix rows; independent contacts; no automatic repeat; optional haptic feedback."); return 0; }
         if(option=='d') device=optarg;
         else if(option=='f') font=optarg;
-        else if(option=='r') {
+        else if(option=='v') {
+            char *end; long value=strtol(optarg,&end,10);
+            if(*optarg=='\0' || *end || value<0 || value>50) { fputs("vibration must be 0..50 ms\n",stderr); return 2; }
+            haptic_ms=(unsigned)value;
+        } else if(option=='r') {
             char *end; long value=strtol(optarg,&end,10);
             if(*optarg=='\0' || *end || value<0 || value>3) { fputs("rotation must be 0..3\n",stderr); return 2; }
             rotation=(int)value;
         } else return 2;
     }
     atexit(cleanup); signal(SIGTERM,stop); signal(SIGINT,stop); signal(SIGHUP,stop);
-    touch_cancel(&gesture);
+    cancel_contacts();
     if(rotation<0) {
         FILE *f=fopen("/sys/class/graphics/fbcon/rotate","r"); rotation=0;
         if(f) { if(fscanf(f,"%d",&rotation)!=1 || rotation<0 || rotation>3) rotation=0; fclose(f); }
@@ -497,10 +526,12 @@ int main(int argc,char **argv)
     struct uinput_setup setup={.id={.bustype=BUS_VIRTUAL,.vendor=1,.product=1,.version=2}};
     snprintf(setup.name,sizeof(setup.name),"fbkeyboard");
     if(ioctl(uifd,UI_DEV_SETUP,&setup)<0 || ioctl(uifd,UI_DEV_CREATE)<0) fail("create uinput");
+    if(haptics_open(&vibration,NULL,haptic_ms)<0)
+        fputs("Haptic feedback unavailable: no ready vibrator; keyboard remains enabled\n",stderr);
     int was_ready=-1, at_sync=1;
     while(!stopped) {
         int ready=console_ready();
-        if(ready!=was_ready) { touch_cancel(&gesture); mods=0; release_all(); dirty=1; }
+        if(ready!=was_ready) { cancel_contacts(); mods=0; release_all(); dirty=1; }
         was_ready=ready;
         struct pollfd pfd={.fd=inputfd,.events=POLLIN};
         int rc=poll(&pfd,1,50);
@@ -510,21 +541,22 @@ int main(int argc,char **argv)
         int budget=512;
         while(budget-- && (rc=libevdev_next_event(input,LIBEVDEV_READ_FLAG_NORMAL,&event))>=0) {
             if(rc==LIBEVDEV_READ_STATUS_SYNC) {
-                touch_cancel(&gesture); mods=0; release_all(); dirty=1;
+                mods=0; release_all(); dirty=1;
                 do rc=libevdev_next_event(input,LIBEVDEV_READ_FLAG_SYNC,&event);
                 while(rc==LIBEVDEV_READ_STATUS_SYNC);
                 if(rc<0 && rc!=-EAGAIN) { errno=-rc; fail("sync touchscreen"); }
+                cancel_contacts();
                 at_sync=1;
                 continue;
             }
             at_sync=event.type==EV_SYN && event.code==SYN_REPORT;
-            if(at_sync) last_touch_report=milliseconds();
+            contact_event(&event);
             if(ready && at_sync) frame();
         }
         if(rc<0 && rc!=-EAGAIN && rc!=-EINTR) { errno=-rc; fail("read touchscreen"); }
         /* Feedback expires even if the driver loses a finger-up event. */
         if(ready) {
-            if(at_sync && rc==-EAGAIN) { frame(); recover_touch(milliseconds()); }
+            if(at_sync && rc==-EAGAIN) frame();
             feedback(milliseconds());
             if(dirty) draw();
         }

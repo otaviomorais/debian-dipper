@@ -9,12 +9,12 @@ payload=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 }
 cd "$payload"
 sha256sum -c SHA256SUMS
-for file in fbkeyboard-arm64 tmux.conf safe-area.conf issue; do
+for file in fbkeyboard-arm64 tmux.conf safe-area.conf issue fbkeyboard.service; do
     [ -f "$file" ] || { echo "Arquivo ausente no pacote: $file" >&2; exit 1; }
 done
 mkdir -p /var/backups
 backup=$(mktemp -d /var/backups/dipper-keyboard.XXXXXXXX)
-files='usr/bin/fbkeyboard etc/dipper-console/tmux.conf etc/dipper-console/safe-area.conf etc/issue'
+files='usr/bin/fbkeyboard etc/dipper-console/tmux.conf etc/dipper-console/safe-area.conf etc/issue etc/systemd/system/fbkeyboard.service'
 for file in $files; do
     if [ -e "/$file" ] || [ -L "/$file" ]; then
         mkdir -p "$backup/$(dirname "$file")"
@@ -44,6 +44,7 @@ cleanup() {
                 rm -f "/$file"
             fi
         done < "$backup/manifest.txt"
+        systemctl daemon-reload || true
         systemctl start fbkeyboard.service || true
     fi
     [ -z "$staged" ] || rm -f "$staged"
@@ -57,13 +58,14 @@ systemctl stop fbkeyboard.service
 changed=1
 mv -f "$staged" /usr/bin/fbkeyboard
 staged=
-for file in etc/dipper-console/tmux.conf etc/dipper-console/safe-area.conf etc/issue; do
+for file in etc/dipper-console/tmux.conf etc/dipper-console/safe-area.conf etc/issue etc/systemd/system/fbkeyboard.service; do
     mkdir -p "/$(dirname "$file")"
     staged=$(mktemp "/$file.update.XXXXXXXX")
     install -m644 "$payload/$(basename "$file")" "$staged"
     mv -f "$staged" "/$file"
     staged=
 done
+systemctl daemon-reload
 systemctl reset-failed fbkeyboard.service
 systemctl start fbkeyboard.service
 sleep 1

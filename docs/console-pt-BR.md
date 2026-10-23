@@ -7,7 +7,76 @@ Xorg, Wayland nem desktop. O console continua dependendo dos drivers de display
 do kernel; isto não é uma correção comprovada para o congelamento completo do
 aparelho investigado anteriormente.
 
-## Atualização v0.1.2: toque sem travar, teclado redesenhado e entalhe
+## Atualização v0.1.3: toques perdidos e vibração
+
+O tratamento anterior rejeitava dois dedos sobrepostos e deixava os espaços
+entre as teclas sem resposta. Agora cada slot multitouch acompanha um contato
+independente; os espaços pequenos aceitam a tecla mais próxima. Um contato que
+ainda não recebeu coordenadas válidas tem 200 ms para localizar sua primeira
+tecla. Cada contato emite uma única combinação completa de pressionar/soltar.
+O programa não altera mais os IDs em cache do libevdev por tempo de inatividade;
+`BTN_TOUCH=0` e ressincronização isolam contatos antigos sem bloquear o seguinte.
+O destaque continua limitado a 160 ms; o desenho e a margem do entalhe são os
+mesmos da v0.1.2.
+
+Baixe [dipper-keyboard-fix-v0.1.3-windows.zip](https://github.com/otaviomorais/debian-dipper/releases/download/console-v0.1.3/dipper-keyboard-fix-v0.1.3-windows.zip),
+extraia tudo, conecte o USB com o Debian iniciado e execute
+`corrigir-teclado.bat`. Não precisa reinstalar, acessar Wi-Fi ou usar SSH.
+O instalador atualiza também o serviço, carrega opcionalmente o driver do
+vibrador e guarda/restaura os arquivos anteriores se a atualização falhar.
+Os construtores de rootfs incorporam o novo teclado e serviço deste checkout.
+
+Quando o driver está disponível, cada tecla reconhecida solicita um pulso
+`FF_RUMBLE` de 20 ms, limitado pelo kernel. O acesso é não bloqueante; erro ou
+ausência do vibrador não impede digitar. `fbkeyboard -v 0` desativa os pulsos;
+`-v 1..50` define a duração em milissegundos ao iniciar o serviço.
+
+### Ativar o vibrador no boot original
+
+No boot distribuído pela imagem original, o nó `haptics@c000` do PMI8998 está
+desativado e não contém `qcom,wave-play-rate-us`. Por isso carregar o módulo
+`qcom-spmi-haptics` não cria um dispositivo de vibração. O preparador altera
+somente `status = "okay"` e o período de 4878 µs no DTB anexado ao kernel.
+O período vem dos [fontes oficiais da Xiaomi para dipper](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/blob/dipper-p-oss/arch/arm64/boot/dts/qcom/dipper-p0.dtsi).
+O kernel comprimido, initramfs, endereços e linha de comando são preservados;
+o checksum do cabeçalho Android é recalculado. Não há recompilação do kernel.
+
+Depois de atualizar o teclado:
+
+1. Salve o trabalho aberto. Execute `testar-vibracao.bat` com o Debian ligado.
+   Ele exige o boot original conhecido, lê a partição sem gravá-la, salva
+   `backup-vibracao/boot-original.img` no computador e inicia o boot modificado
+   com **`fastboot boot`**, sem gravá-lo na partição. O Windows precisa reconhecer
+   o aparelho também em fastboot; o bootloader já deve estar desbloqueado.
+2. Confira se o Debian inicia, o teclado responde e os toques vibram. Reiniciar
+   normalmente retorna ao boot anterior. Se o teste não iniciar, mantenha Power
+   pressionado para reiniciar e envie `diagnostico-vibracao-teste.txt`.
+3. Somente depois de sentir a vibração funcionar, execute `salvar-vibracao.bat`
+   com o Debian do teste ligado. Ele verifica o DTB em execução e o dispositivo
+   `FF_RUMBLE`, então grava somente **boot** e reinicia. Não formata userdata.
+4. Para desfazer a gravação, use `restaurar-boot.bat`, mantendo a pasta
+   `backup-vibracao`. Se o Debian não iniciar, entre manualmente no fastboot
+   com Power + Volume para baixo antes de executar o restaurador.
+
+Os arquivos são conferidos por SHA-256; um boot diferente é recusado. Se o ZIP
+for extraído novamente, preserve `backup-vibracao` da primeira extração.
+O preparador também pode gerar arquivos offline:
+
+```bash
+python3 scripts/prepare-haptics-boot.py --base images/boot.img --output boot-haptics
+```
+
+Isso cria arquivos, sem instalar nem gravar partições. O fluxo de imagem normal
+ainda preserva o boot recebido; para uma imagem com vibração, forneça
+`boot-haptics/boot-vibracao.img` em `BOOT_IMAGE` depois de validar o teste físico.
+
+Verificações: testes de eventos e renderização no ARM64/QEMU, ASan/UBSan no host,
+instalação com reversão em container e comparação completa das propriedades
+DTB, bytes do kernel e initramfs do boot original. Nenhum desses testes substitui
+conferir toque e vibração no aparelho; não foi comprovada uma correção dos
+congelamentos completos anteriores.
+
+## Histórico v0.1.2: teclado redesenhado e entalhe
 
 O relato de tecla destacada que bloqueia os próximos toques levou à revisão do
 estado de contato. Agora cada contato novo envia uma combinação completa ao

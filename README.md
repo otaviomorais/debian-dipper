@@ -1,4 +1,4 @@
-> v0.1.2: teclado redesenhado, recuperação de toque e margem para o entalhe do Mi 8.
+> v0.1.3: áreas de toque ampliadas, contatos independentes e vibração opcional no Mi 8.
 > Console atualizado / Português: [teclado, terminais, Wi-Fi e copiar/colar](docs/console-pt-BR.md).
 > Imagem com tudo integrado: `make image` ou a ação manual **Build factory console image**.
 > Para atualizar um Mi 8 já instalado: `sudo bash scripts/install-console.sh --autostart`.
