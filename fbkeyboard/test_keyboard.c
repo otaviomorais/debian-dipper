@@ -47,7 +47,7 @@ static void test_login_console(void)
 {
     ttyfd=open("/dev/null",O_RDWR); assert(ttyfd>=0);
     screen_w=1080; screen_h=2248; width=1080; full_height=2248;
-    key_height=full_height/3/ROWS; kb_height=key_height*ROWS;
+    kb_height=full_height*34/100; layout();
     console_test_mode=1;
     console_test_size=(struct winsize){.ws_row=70,.ws_col=67,.ws_xpixel=1072,.ws_ypixel=2240};
     active_vt=-1; resized[1]=0;
@@ -73,12 +73,19 @@ static void test_login_console(void)
     close(ttyfd); ttyfd=-1;
 }
 
+static int key_index(unsigned code)
+{
+    for(int i=0;i<ROWS*COLS;i++)
+        if(boxes[i].w && key_at(i).code==code && !key_at(i).shift) return i;
+    assert(!"Key is missing from the visible layout");
+    return -1;
+}
 static void test_events(void)
 {
     int pipes[2]; assert(pipe(pipes)==0); uifd=pipes[1];
-    dispatch(40); /* Ctrl is UI state only, not a held uinput key. */
+    dispatch(key_index(ACT_CTRL)); /* Ctrl is UI state only, not a held uinput key. */
     assert(mods==MOD_CTRL);
-    dispatch(23); /* Ctrl+F */
+    dispatch(key_index(KEY_F)); /* Ctrl+F */
     assert(!mods);
     close(pipes[1]); uifd=-1;
     struct input_event e;
@@ -95,7 +102,7 @@ static void test_events(void)
     assert(count==6 && seen_ctrl && seen_f);
     for(int i=0;i<=KEY_MAX;i++) assert(!held[i]);
     assert(pipe(pipes)==0); uifd=pipes[1];
-    page=1; dispatch(20); /* ! includes a bounded Shift chord */
+    page=1; dispatch(key_index(ACT_SHIFT)); dispatch(key_index(KEY_1)); /* ! includes a bounded Shift chord */
     close(pipes[1]); uifd=-1;
     while(read(pipes[0],&e,sizeof(e))==(ssize_t)sizeof(e)) {
         if(e.type==EV_KEY) held[e.code]=e.value;
@@ -116,31 +123,57 @@ static void test_frames(void)
     assert(!libevdev_enable_event_code(input,EV_ABS,ABS_MT_POSITION_X,&x));
     assert(!libevdev_enable_event_code(input,EV_ABS,ABS_MT_POSITION_Y,&y));
     screen_w=1080;screen_h=2248;rotation=0;width=screen_w;full_height=screen_h;
-    key_height=full_height/3/ROWS;kb_height=key_height*ROWS;
+    kb_height=full_height*34/100;layout();
     for(int i=0;i<2;i++) assert(!libevdev_set_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID,-1));
     touch_reset(&gesture);
     int pipes[2];assert(!pipe(pipes));uifd=pipes[1];
     /* down+up queued together, same coordinate tapped twice */
     for(int i=0;i<2;i++) {
         libevdev_set_slot_value(input,0,ABS_MT_POSITION_X,150);
-        int y_middle=full_height-kb_height+5*key_height+key_height/2;
+        struct box button=boxes[key_index(KEY_LEFT)];
+        int x_middle=button.x+button.w/2;
+        int y_middle=full_height-kb_height+button.y+button.h/2;
+        libevdev_set_slot_value(input,0,ABS_MT_POSITION_X,100+x_middle*1000/(screen_w-1));
         libevdev_set_slot_value(input,0,ABS_MT_POSITION_Y,-50+y_middle*1000/(screen_h-1));
         libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,100+i);
         frame();
         libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,-1);
         frame();
     }
+    assert(!libevdev_enable_event_code(input,EV_KEY,BTN_TOUCH,NULL));
+    libevdev_set_event_value(input,EV_KEY,BTN_TOUCH,1);
+    libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,200); frame();
+    /* New finger after a lost up frame must work immediately. */
+    libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,201); frame();
+    /* An aggregate up overrides a stale, still-active MT slot. */
+    libevdev_set_event_value(input,EV_KEY,BTN_TOUCH,0); frame();
+    assert(gesture.id<0 && !gesture.blocked && highlight<0);
+    assert(libevdev_get_slot_value(input,0,ABS_MT_TRACKING_ID)==-1);
+    libevdev_set_event_value(input,EV_KEY,BTN_TOUCH,1);
+    libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,202); frame();
+    /* Re-reading a held contact never emits a second key. */
+    for(int i=0;i<20;i++) frame();
+    last_touch_report=gesture.started=100;
+    recover_touch(349); assert(gesture.id==202);
+    recover_touch(350); assert(gesture.id<0 && !gesture.blocked);
+    frame(); /* lingering motion with no new tracking ID must not retype */
+    libevdev_set_slot_value(input,0,ABS_MT_TRACKING_ID,203); frame();
+    touch_frame(&gesture,2,204,51,400);
+    last_touch_report=800;
+    recover_touch(900); /* even continuous noise cannot latch a blocked state */
+    assert(!gesture.blocked && gesture.id<0);
     close(pipes[1]);uifd=-1;
     struct input_event e;int presses=0;
     while(read(pipes[0],&e,sizeof(e))==(ssize_t)sizeof(e))
         if(e.type==EV_KEY && e.code==KEY_LEFT && e.value==1) presses++;
-    assert(presses==2);close(pipes[0]);
+    assert(presses==6);close(pipes[0]);
     for(int r=0;r<4;r++) {
         rotation=r;width=(r&1)?screen_h:screen_w;full_height=(r&1)?screen_w:screen_h;
-        key_height=full_height/(width>full_height?2:3)/ROWS;kb_height=key_height*ROWS;
+        kb_height=full_height*(width>full_height?47:34)/100;layout();
         /* No point may become an out-of-bounds layout index. */
         for(int ax=100;ax<=1100;ax+=10) for(int ay=-50;ay<=950;ay+=10) {
             int k=hit(ax,ay); assert(k>=-1 && k<ROWS*COLS);
+            if(k>=0) assert(boxes[k].w && key_at(k).code);
         }
     }
     libevdev_free(input);input=NULL;
@@ -156,18 +189,48 @@ static void test_render(void)
     var.blue=(struct fb_bitfield){.offset=0,.length=8};
     assert(!FT_Init_FreeType(&ft));
     assert(!FT_New_Face(ft,"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",0,&face));
+    for(const unsigned char *p=(const unsigned char *)"⇧⌫←↓↑→↵ç";*p;)
+        assert(FT_Get_Char_Index(face,character(&p)));
     for(int r=0;r<4;r++) {
         rotation=r;width=(r&1)?screen_h:screen_w;full_height=(r&1)?screen_w:screen_h;
-        key_height=full_height/(width>full_height?2:3)/ROWS;kb_height=key_height*ROWS;
+        kb_height=full_height*(width>full_height?47:34)/100;layout();
         canvas=calloc((size_t)width*kb_height,sizeof(*canvas));assert(canvas);
         for(int p=0;p<3;p++) { page=p;draw(); }
         free(canvas);canvas=NULL;
     }
     close(fbfd);fbfd=-1;FT_Done_Face(face);face=NULL;FT_Done_FreeType(ft);ft=NULL;
 }
+static void test_feedback(void)
+{
+    gesture=(struct touch_state){.id=1,.key=key_index(KEY_LEFT),.started=100};
+    feedback(100); assert(highlight==gesture.key);
+    feedback(260); assert(highlight==-1);
+    mods=MOD_CTRL; modifier_started=100;
+    feedback(5100); assert(!mods);
+    touch_reset(&gesture);
+}
+static void test_punctuation(void)
+{
+    static const unsigned codes[]={KEY_SPACE,KEY_1,KEY_2,KEY_3,KEY_4,KEY_5,KEY_6,KEY_7,KEY_8,KEY_9,KEY_0,
+        KEY_MINUS,KEY_EQUAL,KEY_LEFTBRACE,KEY_RIGHTBRACE,KEY_BACKSLASH,KEY_SEMICOLON,KEY_APOSTROPHE,
+        KEY_GRAVE,KEY_COMMA,KEY_DOT,KEY_SLASH};
+    const char *plain=" 1234567890-=[]\\;'`,./", *shifted=" !@#$%^&*()_+{}|:\"~<>?";
+    assert(strlen(plain)==sizeof(codes)/sizeof(codes[0]) && strlen(plain)==strlen(shifted));
+    unsigned char seen[128]={0};
+    for(page=0;page<3;page++) for(int key=0;key<ROWS*COLS;key++) if(boxes[key].w) {
+        struct key k=key_at(key);
+        for(unsigned i=0;i<sizeof(codes)/sizeof(codes[0]);i++) if(k.code==codes[i]) {
+            seen[(unsigned char)(k.shift?shifted[i]:plain[i])]=1;
+            seen[(unsigned char)shifted[i]]=1;
+        }
+    }
+    for(unsigned c=32;c<127;c++)
+        if(!((c>='a' && c<='z') || (c>='A' && c<='Z'))) assert(seen[c]);
+    page=0;
+}
 int main(void)
 {
-    test_login_console(); test_events(); test_frames(); test_render();
-    puts("keyboard: login font ABI/fallback, restart sizing, complete key-up chords, fast MT taps, layout bounds, 12 page/rotation renders: OK");
+    test_login_console(); test_events(); test_frames(); test_render(); test_feedback(); test_punctuation();
+    puts("keyboard: login font ABI, full key-up chords, missing release/BTN_TOUCH recovery, bounded feedback, Unicode and 12 page/rotation renders: OK");
     return 0;
 }

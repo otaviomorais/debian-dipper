@@ -10,42 +10,29 @@ void touch_cancel(struct touch_state *s)
     touch_reset(s);
     s->blocked = 1; /* require all fingers up before accepting another gesture */
 }
-int touch_frame(struct touch_state *s, int count, int id, int key,
-                int repeatable, uint64_t now)
+int touch_frame(struct touch_state *s, int count, int id, int key, uint64_t now)
 {
     if (!count) {
-        int tap = !s->blocked && s->id >= 0 && s->key >= 0 && !s->repeated;
-        s->id = -1; /* keep key for the caller to dispatch */
-        s->blocked = 0;
-        s->repeated = 0;
-        return tap ? TOUCH_TAP : TOUCH_NONE;
+        touch_reset(s);
+        return TOUCH_NONE;
     }
     if (s->blocked)
         return TOUCH_NONE;
-    if (count != 1 || (s->id >= 0 && s->id != id)) {
+    if (count != 1 || id < 0) {
         touch_cancel(s);
+        s->started = now;
         return TOUCH_NONE;
     }
-    if (s->id < 0) {
+    if (s->id != id) {
+        /* A new tracking ID is a new contact even if the previous up frame was
+           missing. Type one complete down/up chord now, never on a timer. */
         s->id = id;
         s->key = key;
-        s->started = s->last = now;
-        s->repeated = 0;
+        s->started = now;
+        return key >= 0 ? TOUCH_TAP : TOUCH_NONE;
     } else if (key != s->key) {
-        /* Sliding outside the original key cancels; don't type the neighbour. */
-        touch_cancel(s);
-        return TOUCH_NONE;
-    }
-    /* Bound damage even if a broken driver never reports a release. */
-    if (now - s->started >= 3000) {
-        touch_cancel(s);
-        return TOUCH_NONE;
-    }
-    if (key >= 0 && repeatable && now - s->started >= 450 &&
-        now - s->last >= 90) {
-        s->last = now;
-        s->repeated = 1;
-        return TOUCH_REPEAT;
+        /* The original key was already emitted. Moving cannot type another. */
+        s->key = -1;
     }
     return TOUCH_NONE;
 }

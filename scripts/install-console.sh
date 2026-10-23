@@ -35,7 +35,7 @@ make -C "$project/fbkeyboard" check
 mkdir -p /var/backups
 backup=$(mktemp -d /var/backups/dipper-console.XXXXXXXX)
 files=(usr/bin/fbkeyboard usr/local/bin/dipper-console usr/local/bin/dipper-menu \
-       usr/local/bin/dipper-status etc/dipper-console/tmux.conf \
+       usr/local/bin/dipper-status etc/dipper-console/tmux.conf etc/dipper-console/safe-area.conf etc/issue \
        etc/dipper-console/autostart etc/profile.d/dipper-console.sh \
        etc/systemd/system/fbkeyboard.service \
        etc/systemd/system/fbkeyboard.service.d/fbkeyboard-font.conf)
@@ -57,6 +57,8 @@ for program in dipper-console dipper-menu dipper-status; do
     install -Dm755 "$project/rootfs/usr/local/bin/$program" "/usr/local/bin/$program"
 done
 install -Dm644 "$project/rootfs/etc/dipper-console/tmux.conf" /etc/dipper-console/tmux.conf
+install -Dm644 "$project/rootfs/etc/dipper-console/safe-area.conf" /etc/dipper-console/safe-area.conf
+install -Dm644 "$project/rootfs/etc/issue" /etc/issue
 install -Dm644 "$project/rootfs/etc/profile.d/dipper-console.sh" /etc/profile.d/dipper-console.sh
 install -Dm644 "$project/rootfs/etc/systemd/system/fbkeyboard.service" /etc/systemd/system/fbkeyboard.service
 install -Dm644 "$project/rootfs/etc/systemd/system/fbkeyboard.service.d/fbkeyboard-font.conf" \
@@ -67,5 +69,5 @@ if (( restart )); then systemctl restart fbkeyboard.service; fi
 trap - ERR
 printf '\nInstalado. Backup: %s\n' "$backup"
 echo 'Como usuário normal, execute: dipper-console'
-echo 'Menu/F1: configurações; New/F2: terminal; setas sempre na última linha.'
+echo 'Menu/F1: configurações; Nova/F2: terminal; setas sempre na última linha.'
 echo 'Para desfazer: sudo bash scripts/restore-console.sh CAMINHO_DO_BACKUP'

@@ -68,6 +68,7 @@ class TmuxTests(unittest.TestCase):
             base = Path(directory)
             config = (ROOT / "rootfs/etc/dipper-console/tmux.conf").read_text()
             config = config.replace("/usr/local/bin/", str(ROOT / "rootfs/usr/local/bin") + "/")
+            config = config.replace("/etc/dipper-console/safe-area.conf", str(ROOT / "rootfs/etc/dipper-console/safe-area.conf"))
             (base / "tmux.conf").write_text(config)
             command = ["tmux", "-S", str(base / "socket"), "-f", str(base / "tmux.conf")]
 
@@ -89,6 +90,10 @@ class TmuxTests(unittest.TestCase):
                 self.assertIn("copy-selection-and-cancel", bindings)
                 self.assertEqual(run("show-options", "-gv", "prefix").strip(), "C-a")
                 self.assertEqual(run("show-options", "-gv", "set-clipboard").strip(), "off")
+                self.assertEqual(run("show-options", "-gv", "status").strip(), "5")
+                for line in range(4):
+                    self.assertEqual(run("show-options", "-gv", f"status-format[{line}]").strip(), "")
+                self.assertIn("status-left", run("show-options", "-gv", "status-format[4]"))
                 run("copy-mode", "-t", "test:1.1")
                 for action in ("history-top", "start-of-line", "begin-selection",
                                "cursor-right", "cursor-right", "cursor-right", "cursor-right", "cursor-right",

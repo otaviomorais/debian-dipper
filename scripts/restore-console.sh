@@ -10,7 +10,7 @@ case "$backup" in /var/backups/dipper-console.*) ;; *) echo 'Backup fora do dire
 while read -r state file extra; do
     [[ "$state" = existed || "$state" = new ]] && [[ -z "${extra:-}" ]] || exit 2
     case "$file" in
-        usr/bin/fbkeyboard|usr/local/bin/dipper-console|usr/local/bin/dipper-menu|usr/local/bin/dipper-status|etc/dipper-console/tmux.conf|etc/dipper-console/autostart|etc/profile.d/dipper-console.sh|etc/systemd/system/fbkeyboard.service|etc/systemd/system/fbkeyboard.service.d/fbkeyboard-font.conf) ;;
+        usr/bin/fbkeyboard|usr/local/bin/dipper-console|usr/local/bin/dipper-menu|usr/local/bin/dipper-status|etc/dipper-console/tmux.conf|etc/dipper-console/safe-area.conf|etc/issue|etc/dipper-console/autostart|etc/profile.d/dipper-console.sh|etc/systemd/system/fbkeyboard.service|etc/systemd/system/fbkeyboard.service.d/fbkeyboard-font.conf) ;;
         *) echo 'Entrada inesperada no manifesto.' >&2; exit 2 ;;
     esac
     if [[ "$state" = existed ]]; then [[ -e "$backup/$file" || -L "$backup/$file" ]] || exit 2; fi

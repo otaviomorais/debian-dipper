@@ -15,6 +15,9 @@ test-touch: test_touch.c touch.c touch.h
 test-keyboard: test_keyboard.c fbkeyboard.c touch.c touch.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ test_keyboard.c touch.c $(LDLIBS)
 
+preview-keyboard: preview.c fbkeyboard.c touch.c touch.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ preview.c touch.c $(LDLIBS)
+
 check: test-touch test-keyboard
 	./test-touch
 	./test-keyboard
@@ -23,7 +26,7 @@ install: fbkeyboard
 	install -Dm755 fbkeyboard $(DESTDIR)/usr/bin/fbkeyboard
 
 clean:
-	rm -f fbkeyboard test-touch test-keyboard *.o
+	rm -f fbkeyboard test-touch test-keyboard preview-keyboard *.o
 
 .PHONY: check install clean
 

@@ -20,4 +20,5 @@ __pycache__/
 /fbkeyboard/fbkeyboard
 /fbkeyboard/test-touch
 /fbkeyboard/test-keyboard
+/fbkeyboard/preview-keyboard
 /fbkeyboard/*.o

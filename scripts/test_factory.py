@@ -46,7 +46,7 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(self.stage(), count)
         result = subprocess.run([str(self.root / "usr/bin/fbkeyboard"), "-h"],
                                 check=True, text=True, capture_output=True)
-        self.assertIn("Seven visible rows", result.stdout)
+        self.assertIn("Six rows", result.stdout)
 
     def test_wrong_architecture_changes_nothing(self):
         other = "arm64" if self.architecture == "amd64" else "amd64"

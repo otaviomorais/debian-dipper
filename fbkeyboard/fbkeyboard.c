@@ -27,7 +27,7 @@
 #include FT_FREETYPE_H
 #include "touch.h"
 
-#define ROWS 7
+#define ROWS 6
 #define COLS 10
 #define MOD_SHIFT 1
 #define MOD_CTRL 2
@@ -42,27 +42,32 @@ struct key { const char *label; unsigned short code; unsigned char shift; };
 #define K(label, code) {label, code, 0}
 #define S(label, code) {label, code, 1}
 static const struct key common[ROWS][COLS] = {
-    {K("Esc",KEY_ESC), K("Tab",KEY_TAB), K("Home",KEY_HOME), K("End",KEY_END), K("PgUp",KEY_PAGEUP), K("PgDn",KEY_PAGEDOWN), K("Del",KEY_DELETE), K("Ins",KEY_INSERT), K("Fn",ACT_FN), K("Reset",ACT_RESET)},
+    {K("Esc",KEY_ESC),K("Tab",KEY_TAB),K("Ctrl",ACT_CTRL),K("Alt",ACT_ALT),K("Fn",ACT_FN),K("Hist",KEY_F8),K("Marcar",KEY_F10),K("Copiar",KEY_F11),K("Colar",KEY_F12)},
     {K("q",KEY_Q),K("w",KEY_W),K("e",KEY_E),K("r",KEY_R),K("t",KEY_T),K("y",KEY_Y),K("u",KEY_U),K("i",KEY_I),K("o",KEY_O),K("p",KEY_P)},
-    {K("a",KEY_A),K("s",KEY_S),K("d",KEY_D),K("f",KEY_F),K("g",KEY_G),K("h",KEY_H),K("j",KEY_J),K("k",KEY_K),K("l",KEY_L),K("/",KEY_SLASH)},
-    {K("Shift",ACT_SHIFT),K("z",KEY_Z),K("x",KEY_X),K("c",KEY_C),K("v",KEY_V),K("b",KEY_B),K("n",KEY_N),K("m",KEY_M),K(".",KEY_DOT),K("Bksp",KEY_BACKSPACE)},
-    {K("Ctrl",ACT_CTRL),K("Alt",ACT_ALT),K("123",ACT_NUM),K("Space",KEY_SPACE),K("Space",KEY_SPACE),K("-",KEY_MINUS),K("=",KEY_EQUAL),K("\\",KEY_BACKSLASH),K("'",KEY_APOSTROPHE),K("Enter",KEY_ENTER)},
-    {K("Left",KEY_LEFT),K("Down",KEY_DOWN),K("Up",KEY_UP),K("Right",KEY_RIGHT),K("Menu",KEY_F1),K("New",KEY_F2),K("Prev",KEY_F3),K("Next",KEY_F4),K("Split",KEY_F5),K("Zoom",KEY_F6)},
-    {K("Hist",KEY_F8),K("Select",KEY_F10),K("Copy",KEY_F11),K("Paste",KEY_F12),K("Cancel",KEY_ESC),K("Pane",KEY_F7),K("Cmd",KEY_F9),K("`",KEY_GRAVE),S("~",KEY_GRAVE),K("Reset",ACT_RESET)}
+    {K("a",KEY_A),K("s",KEY_S),K("d",KEY_D),K("f",KEY_F),K("g",KEY_G),K("h",KEY_H),K("j",KEY_J),K("k",KEY_K),K("l",KEY_L)},
+    {K("⇧",ACT_SHIFT),K("z",KEY_Z),K("x",KEY_X),K("c",KEY_C),K("v",KEY_V),K("b",KEY_B),K("n",KEY_N),K("m",KEY_M),K("⌫",KEY_BACKSPACE)},
+    {K("123",ACT_NUM),K("/",KEY_SLASH),K("espaço",KEY_SPACE),K(".",KEY_DOT),K("Enter ↵",KEY_ENTER)},
+    {K("Menu",KEY_F1),K("←",KEY_LEFT),K("↓",KEY_DOWN),K("↑",KEY_UP),K("→",KEY_RIGHT),K("Nova",KEY_F2),K("Painel",KEY_F7)}
 };
 static const struct key numbers[3][COLS] = {
     {K("1",KEY_1),K("2",KEY_2),K("3",KEY_3),K("4",KEY_4),K("5",KEY_5),K("6",KEY_6),K("7",KEY_7),K("8",KEY_8),K("9",KEY_9),K("0",KEY_0)},
-    {S("!",KEY_1),S("@",KEY_2),S("#",KEY_3),S("$",KEY_4),S("%",KEY_5),S("^",KEY_6),S("&",KEY_7),S("*",KEY_8),S("(",KEY_9),S(")",KEY_0)},
-    {K("Shift",ACT_SHIFT),K("[",KEY_LEFTBRACE),K("]",KEY_RIGHTBRACE),S("{",KEY_LEFTBRACE),S("}",KEY_RIGHTBRACE),K(";",KEY_SEMICOLON),S(":",KEY_SEMICOLON),K(",",KEY_COMMA),S("?",KEY_SLASH),K("Bksp",KEY_BACKSPACE)}
+    {K("[",KEY_LEFTBRACE),K("]",KEY_RIGHTBRACE),S("{",KEY_LEFTBRACE),S("}",KEY_RIGHTBRACE),S("(",KEY_9),S(")",KEY_0),K("=",KEY_EQUAL),S("+",KEY_EQUAL),K("\\",KEY_BACKSLASH)},
+    {K("⇧",ACT_SHIFT),K("-",KEY_MINUS),S("_",KEY_MINUS),K(";",KEY_SEMICOLON),S(":",KEY_SEMICOLON),K("'",KEY_APOSTROPHE),S("\"",KEY_APOSTROPHE),K(",",KEY_COMMA),K("⌫",KEY_BACKSPACE)}
 };
 static const struct key functions[3][COLS] = {
     {K("F1",KEY_F1),K("F2",KEY_F2),K("F3",KEY_F3),K("F4",KEY_F4),K("F5",KEY_F5),K("F6",KEY_F6),K("F7",KEY_F7),K("F8",KEY_F8),K("F9",KEY_F9),K("F10",KEY_F10)},
-    {K("F11",KEY_F11),K("F12",KEY_F12),K("`",KEY_GRAVE),S("~",KEY_GRAVE),S("_",KEY_MINUS),S("+",KEY_EQUAL),S("|",KEY_BACKSLASH),S("\"",KEY_APOSTROPHE),S("<",KEY_COMMA),S(">",KEY_DOT)},
-    {K("Shift",ACT_SHIFT),K("z",KEY_Z),K("x",KEY_X),K("c",KEY_C),K("v",KEY_V),K("b",KEY_B),K("n",KEY_N),K("m",KEY_M),K(".",KEY_DOT),K("Bksp",KEY_BACKSPACE)}
+    {K("F11",KEY_F11),K("F12",KEY_F12),K("Home",KEY_HOME),K("End",KEY_END),K("PgUp",KEY_PAGEUP),K("PgDn",KEY_PAGEDOWN),K("Ins",KEY_INSERT),K("Del",KEY_DELETE),K("Reset",ACT_RESET)},
+    {K("⇧",ACT_SHIFT),K("`",KEY_GRAVE),S("~",KEY_GRAVE),S("|",KEY_BACKSLASH),S("<",KEY_COMMA),S(">",KEY_DOT),S("!",KEY_1),S("@",KEY_2),K("⌫",KEY_BACKSPACE)}
 };
+static const int row_count[ROWS]={9,10,9,9,5,7};
+struct box { int x,y,w,h; };
+static struct box boxes[ROWS*COLS];
 static volatile sig_atomic_t stopped;
 static int fbfd=-1, uifd=-1, ttyfd=-1, inputfd=-1, rotation;
-static int screen_w, screen_h, width, full_height, key_height, kb_height, page, mods;
+static int screen_w, screen_h, width, full_height, kb_height, page, mods;
+static int highlight=-1;
+static uint64_t modifier_started;
+static uint64_t last_touch_report;
 static struct fb_fix_screeninfo fix;
 static struct fb_var_screeninfo var;
 static uint32_t *canvas;
@@ -88,14 +93,37 @@ static struct key key_at(int index)
     int r=index/COLS, c=index%COLS;
     if (page==1 && r>=1 && r<=3) return numbers[r-1][c];
     if (page==2 && r>=1 && r<=3) return functions[r-1][c];
+    if (page==1 && r==4 && c==1) return (struct key)S("?",KEY_SLASH);
     return common[r][c];
 }
-static int repeatable(int index)
+static void layout(void)
 {
-    if (index<0) return 0;
-    unsigned code=key_at(index).code;
-    return code==KEY_BACKSPACE || code==KEY_DELETE || code==KEY_LEFT ||
-           code==KEY_RIGHT || code==KEY_UP || code==KEY_DOWN;
+    static const int heights[ROWS]={7,13,13,13,12,9};
+    int pad=width/70, gap=width/110;
+    if(pad<4) pad=4;
+    if(gap<3) gap=3;
+    int available=kb_height-2*pad-gap*(ROWS-1), y=pad;
+    memset(boxes,0,sizeof(boxes));
+    for(int r=0;r<ROWS;r++) {
+        int h=available*heights[r]/67;
+        int weights[COLS]={0}, total=0;
+        for(int c=0;c<row_count[r];c++) weights[c]=10;
+        if(r==3) weights[0]=weights[8]=15;
+        if(r==4) { weights[0]=14; weights[1]=9; weights[2]=47; weights[3]=9; weights[4]=21; }
+        if(r==5) { weights[0]=16; weights[1]=weights[2]=weights[3]=weights[4]=12; weights[5]=weights[6]=18; }
+        for(int c=0;c<row_count[r];c++) total+=weights[c];
+        int row_width=width-2*pad;
+        if(r==2) row_width=row_width*9/10;
+        int x=(width-row_width)/2;
+        int usable=row_width-gap*(row_count[r]-1), used=0;
+        for(int c=0;c<row_count[r];c++) {
+            int end=usable*(used+weights[c])/total;
+            int w=end-usable*used/total;
+            boxes[r*COLS+c]=(struct box){x,y,w,h};
+            x+=w+gap; used+=weights[c];
+        }
+        y+=h+gap;
+    }
 }
 static int send_event(unsigned type, unsigned code, int value)
 {
@@ -125,6 +153,7 @@ static int tap(unsigned code, unsigned mask)
 }
 static void dispatch(int index)
 {
+    if(index<0 || index>=ROWS*COLS || !boxes[index].w) return;
     struct key k=key_at(index);
     switch(k.code) {
     case ACT_SHIFT: mods^=MOD_SHIFT; break;
@@ -135,6 +164,7 @@ static void dispatch(int index)
     case ACT_RESET: mods=0; page=0; release_all(); break;
     default: tap(k.code,(unsigned)mods|(k.shift?MOD_SHIFT:0)); mods=0; break;
     }
+    modifier_started=milliseconds();
     dirty=1;
 }
 /* Draw in upright logical coordinates, then rotate only the small keyboard area. */
@@ -143,21 +173,62 @@ static void rect(int x,int y,int w,int h,uint32_t color)
     for(int j=y;j<y+h;j++) for(int i=x;i<x+w;i++)
         if(i>=0 && i<width && j>=0 && j<kb_height) canvas[j*width+i]=color;
 }
-static void text(int x,int y,const char *label,int cellwidth,uint32_t color)
+static void rounded(struct box b,int radius,uint32_t color)
 {
-    int px=key_height/4;
-    int limit=cellwidth/((int)strlen(label)+1);
-    if(px>limit*3/2) px=limit*3/2;
+    if(radius>b.w/2) radius=b.w/2;
+    if(radius>b.h/2) radius=b.h/2;
+    for(int y=0;y<b.h;y++) for(int x=0;x<b.w;x++) {
+        int dx=x<radius?radius-1-x:x>=b.w-radius?x-(b.w-radius):0;
+        int dy=y<radius?radius-1-y:y>=b.h-radius?y-(b.h-radius):0;
+        if(dx*dx+dy*dy<radius*radius && b.x+x>=0 && b.x+x<width && b.y+y>=0 && b.y+y<kb_height)
+            canvas[(b.y+y)*width+b.x+x]=color;
+    }
+}
+static unsigned character(const unsigned char **cursor)
+{
+    const unsigned char *p=*cursor;
+    unsigned code=*p++, n=0;
+    if(code>=0xf0) { code&=7; n=3; }
+    else if(code>=0xe0) { code&=15; n=2; }
+    else if(code>=0xc0) { code&=31; n=1; }
+    while(n-- && *p && (*p&0xc0)==0x80) code=(code<<6)|(*p++&63);
+    *cursor=p; return code;
+}
+static uint32_t blend(uint32_t background,uint32_t foreground,unsigned alpha)
+{
+    unsigned r=(((background>>16)&255)*(255-alpha)+((foreground>>16)&255)*alpha)/255;
+    unsigned g=(((background>>8)&255)*(255-alpha)+((foreground>>8)&255)*alpha)/255;
+    unsigned b=((background&255)*(255-alpha)+(foreground&255)*alpha)/255;
+    return (r<<16)|(g<<8)|b;
+}
+static void text(struct box b,const char *label,int px,uint32_t color)
+{
+    int advance=0,ascent=0,descent=0;
     if(px<8) px=8;
-    FT_Set_Pixel_Sizes(face,0,(unsigned)px);
-    for(const unsigned char *p=(const unsigned char *)label;*p;p++) {
-        if(FT_Load_Char(face,*p,FT_LOAD_RENDER)) continue;
+    for(;;) {
+        FT_Set_Pixel_Sizes(face,0,(unsigned)px);
+        advance=ascent=descent=0;
+        for(const unsigned char *p=(const unsigned char *)label;*p;) {
+            if(FT_Load_Char(face,character(&p),FT_LOAD_RENDER)) continue;
+            FT_GlyphSlot g=face->glyph;
+            advance+=(int)(g->advance.x>>6);
+            if(g->bitmap_top>ascent) ascent=g->bitmap_top;
+            if((int)g->bitmap.rows-g->bitmap_top>descent) descent=(int)g->bitmap.rows-g->bitmap_top;
+        }
+        if((advance<=b.w-8 && ascent+descent<=b.h-6) || px<=8) break;
+        px--;
+    }
+    int x=b.x+(b.w-advance)/2,baseline=b.y+(b.h-ascent-descent)/2+ascent;
+    for(const unsigned char *p=(const unsigned char *)label;*p;) {
+        if(FT_Load_Char(face,character(&p),FT_LOAD_RENDER)) continue;
         FT_GlyphSlot g=face->glyph;
         for(unsigned j=0;j<g->bitmap.rows;j++) for(unsigned i=0;i<g->bitmap.width;i++) {
-            int dx=x+g->bitmap_left+(int)i, dy=y-g->bitmap_top+(int)j;
+            int dx=x+g->bitmap_left+(int)i,dy=baseline-g->bitmap_top+(int)j;
             unsigned char alpha=g->bitmap.buffer[j*g->bitmap.pitch+i];
-            if(alpha && dx>=0 && dx<width && dy>=0 && dy<kb_height)
-                canvas[dy*width+dx]=color;
+            if(alpha && dx>=0 && dx<width && dy>=0 && dy<kb_height) {
+                uint32_t *destination=&canvas[dy*width+dx];
+                *destination=blend(*destination,color,alpha);
+            }
         }
         x+=(int)(g->advance.x>>6);
     }
@@ -171,22 +242,39 @@ static uint32_t pixel(uint32_t rgb)
 }
 static void draw(void)
 {
-    rect(0,0,width,kb_height,0x0b1220);
-    for(int r=0;r<ROWS;r++) for(int c=0;c<COLS;c++) {
-        if(r==4 && c==4) continue; /* space spans two columns */
-        int index=r*COLS+c, x=c*width/COLS, y=r*key_height;
-        int w=(c+(r==4 && c==3?2:1))*width/COLS-x;
+    rect(0,0,width,kb_height,0x0c111a);
+    rect(0,0,width,2,0x273347);
+    for(int r=0;r<ROWS;r++) for(int c=0;c<row_count[r];c++) {
+        int index=r*COLS+c;
+        struct box b=boxes[index];
         struct key k=key_at(index);
-        int selected=gesture.id>=0 && !gesture.blocked && gesture.key==index;
+        int selected=highlight==index;
         int enabled=(k.code==ACT_SHIFT && (mods&MOD_SHIFT)) ||
                     (k.code==ACT_CTRL && (mods&MOD_CTRL)) ||
                     (k.code==ACT_ALT && (mods&MOD_ALT)) ||
                     (k.code==ACT_NUM && page==1) || (k.code==ACT_FN && page==2);
-        rect(x+2,y+2,w-4,key_height-4,selected?0x2563eb:enabled?0x7c3aed:0x243247);
-        char label[16];
+        uint32_t background=r==0?0x18212e:r==5?0x1c293a:0x273343;
+        uint32_t foreground=0xe9eff7;
+        if(k.code==KEY_ENTER) background=0x367bd4;
+        if(enabled) { background=0x94c4ff; foreground=0x10243e; }
+        if(selected) { background=0x6599d7; foreground=0x09192e; }
+        int radius=width/70;
+        rounded((struct box){b.x,b.y+2,b.w,b.h},radius,0x070c13);
+        rounded(b,radius,background);
+        char label[32];
         snprintf(label,sizeof(label),"%s",k.label);
-        if((mods&MOD_SHIFT) && strlen(label)==1 && label[0]>='a' && label[0]<='z') label[0]-=32;
-        text(x+6,y+key_height*2/3,label,w-12,0xe2e8f0);
+        if(strlen(label)==1) {
+            if(label[0]>='a' && label[0]<='z') label[0]-=32;
+            if((mods&MOD_SHIFT) && !k.shift) {
+                const char *normal="1234567890-=[]\\;',./`";
+                const char *shifted="!@#$%^&*()_+{}|:\"<>?~";
+                const char *match=strchr(normal,label[0]);
+                if(match) label[0]=shifted[match-normal];
+            }
+        }
+        int px=r==0?width/42:r==5?width/34:r==4?width/32:width/24;
+        if(k.code==KEY_SPACE) { px=width/38; foreground=0xa8b7cb; }
+        text(b,label,px,foreground);
     }
     int pw=(rotation&1)?kb_height:width;
     int ph=(rotation&1)?width:kb_height;
@@ -221,24 +309,51 @@ static int hit(int ax,int ay)
     if(rotation==3) { lx=screen_h-1-(int)y; ly=(int)x; }
     ly-=full_height-kb_height;
     if(ly<0 || ly>=kb_height) return -1;
-    int r=ly/key_height,c=lx*COLS/width;
-    if(r==4 && c==4) c=3;
-    return r*COLS+c;
+    for(int i=0;i<ROWS*COLS;i++) {
+        struct box b=boxes[i];
+        if(b.w && lx>=b.x && lx<b.x+b.w && ly>=b.y && ly<b.y+b.h) return i;
+    }
+    return -1;
+}
+static void feedback(uint64_t now)
+{
+    int next=gesture.id>=0 && !gesture.blocked && now>=gesture.started && now-gesture.started<160?gesture.key:-1;
+    if(next!=highlight) { highlight=next; dirty=1; }
+    if(mods && now>=modifier_started && now-modifier_started>=5000) { mods=0; dirty=1; }
 }
 static void frame(void)
 {
     int count=0,id=-1,key=-1;
-    for(int i=0;i<libevdev_get_num_slots(input);i++) {
+    /* BTN_TOUCH is the aggregate hardware state. Some drivers can leave stale
+       slot IDs after the final lift; don't let those slots latch the UI. */
+    int up=libevdev_has_event_code(input,EV_KEY,BTN_TOUCH) &&
+           !libevdev_get_event_value(input,EV_KEY,BTN_TOUCH);
+    if(up) for(int i=0;i<libevdev_get_num_slots(input);i++)
+        libevdev_set_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID,-1);
+    if(!up) for(int i=0;i<libevdev_get_num_slots(input);i++) {
         int tracking=libevdev_get_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID);
         if(tracking<0) continue;
         count++; id=tracking;
         key=hit(libevdev_get_slot_value(input,(unsigned)i,ABS_MT_POSITION_X),
                 libevdev_get_slot_value(input,(unsigned)i,ABS_MT_POSITION_Y));
     }
-    int before=gesture.key, blocked=gesture.blocked, down=gesture.id>=0;
-    int action=touch_frame(&gesture,count,id,key,repeatable(key),milliseconds());
-    if(action) dispatch(gesture.key);
-    if(before!=gesture.key || blocked!=gesture.blocked || down!=(gesture.id>=0)) dirty=1;
+    uint64_t now=milliseconds();
+    if(touch_frame(&gesture,count,id,key,now)) dispatch(gesture.key);
+    feedback(now);
+}
+static void recover_touch(uint64_t now)
+{
+    /* A finger already emitted its key. Retire quiet contacts locally; later
+       motion without a fresh TRACKING_ID cannot type a phantom second key.
+       This also unlocks a stale multi-slot/sync state after a missing lift. */
+    if((gesture.id>=0 || gesture.blocked) &&
+       ((now>=last_touch_report && now-last_touch_report>=250) ||
+        (now>=gesture.started && now-gesture.started>=500))) {
+        for(int i=0;i<libevdev_get_num_slots(input);i++)
+            libevdev_set_slot_value(input,(unsigned)i,ABS_MT_TRACKING_ID,-1);
+        touch_reset(&gesture);
+        feedback(now);
+    }
 }
 static int console_ready(void)
 {
@@ -317,7 +432,7 @@ int main(int argc,char **argv)
     const char *device=NULL,*font="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     int option; rotation=-1;
     while((option=getopt(argc,argv,"d:f:r:h"))!=-1) {
-        if(option=='h') { puts("fbkeyboard [-d /dev/input/eventN] [-f font.ttf] [-r 0..3]\nSeven visible rows; one-shot modifiers; hold capped at 3 seconds."); return 0; }
+        if(option=='h') { puts("fbkeyboard [-d /dev/input/eventN] [-f font.ttf] [-r 0..3]\nSix rows; one contact = one key; no automatic repeat; notch-safe console."); return 0; }
         if(option=='d') device=optarg;
         else if(option=='f') font=optarg;
         else if(option=='r') {
@@ -341,8 +456,8 @@ int main(int argc,char **argv)
        (uint64_t)(var.yoffset+var.yres)*fix.line_length>fix.smem_len) { fputs("Invalid framebuffer stride/offset\n",stderr); return 1; }
     screen_w=(int)var.xres; screen_h=(int)var.yres;
     width=(rotation&1)?screen_h:screen_w; full_height=(rotation&1)?screen_w:screen_h;
-    key_height=full_height/(width>full_height?2:3)/ROWS;
-    kb_height=key_height*ROWS;
+    kb_height=full_height*(width>full_height?47:34)/100;
+    layout();
     canvas=calloc((size_t)width*kb_height,sizeof(*canvas));
     if(!canvas) fail("keyboard buffer");
     if(FT_Init_FreeType(&ft) || FT_New_Face(ft,font,0,&face)) { fputs("Cannot load font\n",stderr); return 1; }
@@ -403,11 +518,16 @@ int main(int argc,char **argv)
                 continue;
             }
             at_sync=event.type==EV_SYN && event.code==SYN_REPORT;
+            if(at_sync) last_touch_report=milliseconds();
             if(ready && at_sync) frame();
         }
         if(rc<0 && rc!=-EAGAIN && rc!=-EINTR) { errno=-rc; fail("read touchscreen"); }
-        /* Timer also bounds repeats when the finger is motionless. */
-        if(ready) { if(at_sync && rc==-EAGAIN) frame(); if(dirty) draw(); }
+        /* Feedback expires even if the driver loses a finger-up event. */
+        if(ready) {
+            if(at_sync && rc==-EAGAIN) { frame(); recover_touch(milliseconds()); }
+            feedback(milliseconds());
+            if(dirty) draw();
+        }
     }
     return 0;
 }

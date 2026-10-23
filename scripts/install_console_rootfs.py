@@ -12,6 +12,8 @@ ASSETS = {
     "usr/local/bin/dipper-menu": 0o755,
     "usr/local/bin/dipper-status": 0o755,
     "etc/dipper-console/tmux.conf": 0o644,
+    "etc/dipper-console/safe-area.conf": 0o644,
+    "etc/issue": 0o644,
     "etc/profile.d/dipper-console.sh": 0o644,
     "etc/systemd/system/fbkeyboard.service": 0o644,
     "etc/systemd/system/fbkeyboard.service.d/fbkeyboard-font.conf": 0o644,

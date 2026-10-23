@@ -7,6 +7,36 @@ Xorg, Wayland nem desktop. O console continua dependendo dos drivers de display
 do kernel; isto não é uma correção comprovada para o congelamento completo do
 aparelho investigado anteriormente.
 
+## Atualização v0.1.2: toque sem travar, teclado redesenhado e entalhe
+
+O relato de tecla destacada que bloqueia os próximos toques levou à revisão do
+estado de contato. Agora cada contato novo envia uma combinação completa ao
+encostar, sem esperar a liberação e sem repetição automática. Um ID novo pode
+ser aceito mesmo quando falta o frame de liberação anterior. `BTN_TOUCH=0`
+limpa slots antigos. Contatos sem eventos por 250 ms e estados ainda presos
+após 500 ms são retirados do cache local: movimento posterior sem novo ID não
+produz outra tecla. O destaque visual dura no máximo 160 ms. Modificadores
+selecionados expiram depois de cinco segundos sem uso.
+
+São seis fileiras com letras maiores, alinhamento QWERTY desencontrado,
+teclas arredondadas e fonte com antialiasing real. Setas, Menu, Nova e Painel
+continuam visíveis; Hist, Marcar, Copiar e Colar ficam na faixa superior.
+A renderização pode ser conferida no PNG do release `console-v0.1.2`.
+
+O tmux reserva quatro linhas vazias acima da barra, equivalentes a 128 pixels
+com a fonte padrão de 32 pixels. A barra ocupa a quinta linha e os aplicativos
+ficam abaixo dela. O login recebe a mesma margem por `/etc/issue` no próximo
+início do getty. Isso protege a sessão do recorte do Mi 8; as mensagens do
+kernel antes do login continuam usando o console original.
+
+No Windows, use o ZIP `dipper-keyboard-fix-v0.1.2-windows.zip` do release
+`console-v0.1.2`, extraia tudo e execute `corrigir-teclado.bat` pelo cabo USB.
+Não precisa reinstalar. O pacote verifica checksums, guarda o binário e as
+configurações anteriores em `/var/backups/dipper-keyboard.XXXXXXXX`, recarrega
+os servidores tmux do console sem fechar janelas e restaura os arquivos
+se a instalação falhar. Binário, configuração e `/etc/issue` novos também são
+incorporados pelos construtores de rootfs/imagem deste checkout.
+
 ## Teclado não aparece no login: correção v0.1.1 por USB
 
 A imagem `console-v0.1.0` tem um erro na consulta `KDFONTOP`: o programa
@@ -142,8 +172,7 @@ início automático: `sudo rm /etc/dipper-console/autostart`.
 O script reinicia `fbkeyboard.service` ao terminar; o teclado pode desaparecer
 brevemente. Instalar por SSH é conveniente. `--no-restart` deixa o serviço
 parado após a substituição, para iniciá-lo manualmente. `--no-packages` só
-serve quando todas as dependências já estão instaladas. Nenhuma instalação
-ou reinicialização de serviço foi executada num Mi 8 durante o desenvolvimento.
+serve quando todas as dependências já estão instaladas. A aplicação no aparelho deve ser conferida após executar a atualização.
 O drop-in de fonte é atualizado para o caminho Debian opcional: a ausência
 da antiga fonte Alpine não impede mais o serviço de iniciar.
 
@@ -163,7 +192,7 @@ tmux separado e não sobrescrevem `~/.tmux.conf`.
 
 ## Teclado
 
-São sete linhas visíveis, com letras, números, símbolos de shell, setas,
+São seis linhas visíveis, com letras, números, símbolos de shell, setas,
 Home/End, PgUp/PgDn, Insert/Delete, Escape/Tab/Enter, F1–F12 e atalhos.
 `123` alterna os símbolos; `Fn` abre as funções e símbolos adicionais.
 Os rótulos de pontuação pressupõem o mapa de teclado US, como na imagem original.
@@ -171,20 +200,22 @@ Os rótulos de pontuação pressupõem o mapa de teclado US, como na imagem orig
 Shift, Ctrl e Alt selecionam um modificador para **a próxima tecla**. O estado
 selecionado fica destacado. O dispositivo virtual recebe pressionar e soltar
 a combinação inteira; nenhum modificador é deixado fisicamente pressionado.
-Para cancelar a seleção, toque novamente no modificador ou use `Reset`.
+Para cancelar a seleção, toque novamente no modificador, espere cinco segundos
+ou abra `Fn` e use `Reset`.
 Exemplos: Ctrl e depois C interrompe um comando; Ctrl e depois A envia o prefixo
 do tmux; Shift e depois uma letra produz a maiúscula correspondente.
 
-Um toque digita ao levantar o dedo. Arrastar para fora da tecla original cancela
-o toque. Dois dedos simultâneos cancelam o gesto até ambos serem retirados;
-não é um teclado multitoque com acordes físicos. É possível tocar o mesmo lugar
-rapidamente várias vezes sem depender de novas coordenadas do driver.
+Um toque digita ao encostar, enviando pressionar/soltar na mesma operação.
+Arrastar não digita teclas vizinhas. Dois dedos simultâneos interrompem o
+rastreamento até a liberação ou recuperação automática; não são acordes físicos.
+Um ID novo volta a digitar sem depender da liberação anterior. O destaque
+expira em 160 ms; slots antigos são limpos por `BTN_TOUCH=0`, inatividade de
+250 ms ou limite de 500 ms. Não há repetição automática de nenhuma tecla,
+inclusive Backspace e setas. Para apagar uma linha no shell, use Ctrl e U.
 
-Backspace, Delete e setas repetem após 450 ms, a cada 90 ms. Por proteção contra
-um driver que nunca envie o fim do toque, o gesto é cancelado depois de 3 s;
-retire e toque novamente para continuar. Perda de eventos (`SYN_DROPPED`)
-ressincroniza o estado com libevdev e cancela o gesto sem inventar uma tecla.
-Mudança de VT, entrada em modo gráfico e encerramento também limpam o estado.
+Perda de eventos (`SYN_DROPPED`) ressincroniza o estado com libevdev e não
+inventa uma tecla. Movimento de um contato retirado do cache não gera uma
+segunda entrada. Mudança de VT, modo gráfico e encerramento limpam o estado.
 
 O teclado só suporta framebuffer RGB de 32 bits e touchscreen multitouch com
 slots, correspondentes ao alvo dipper. Pode selecionar o touchscreen com `-d`
@@ -196,21 +227,21 @@ Mudanças de rotação/fonte em tempo de execução exigem reiniciar o teclado.
 | Botão | Função no Dipper Console |
 | --- | --- |
 | Menu / F1 | Configurações e aplicativos de texto |
-| New / F2 | Novo terminal |
-| Prev / F3 e Next / F4 | Janela anterior/próxima |
-| Split / F5 | Dividir o terminal em dois painéis |
-| Zoom / F6 | Ampliar/restaurar o painel |
-| Pane / F7 | Próximo painel |
+| Nova / F2 | Novo terminal |
+| Fn → F3 e F4 | Janela anterior/próxima |
+| Fn → F5 | Dividir o terminal em dois painéis |
+| Fn → F6 | Ampliar/restaurar o painel |
+| Painel / F7 | Próximo painel |
 | Hist / F8 | Histórico do terminal |
-| Cmd / F9 | Linha de comandos do tmux |
-| Select / F10 | Iniciar seleção de texto |
-| Copy / F11 | Copiar a seleção e voltar |
-| Paste / F12 | Colar o último texto copiado |
+| Fn → F9 | Linha de comandos do tmux |
+| Marcar / F10 | Iniciar seleção de texto |
+| Copiar / F11 | Copiar a seleção e voltar |
+| Colar / F12 | Colar o último texto copiado |
 
 Os atalhos F1–F12 são usados por este ambiente. Fora dele, os botões enviam as
 teclas de função normais; eles não gerenciam outros terminais por conta própria.
 Dentro dele, para enviar uma tecla de função a um aplicativo que a utilize,
-abra `Cmd` e digite, por exemplo, `send-keys F1`.
+abra Fn → F9 e digite, por exemplo, `send-keys F1`.
 
 A barra superior mostra bateria, indicação `+` ao carregar, interface/IP de rede
 e horário local do sistema. Atualiza a cada cinco segundos. A indicação de rede
@@ -228,11 +259,11 @@ regras novas de privilégio. Htop monitora processos e mc gerencia arquivos.
 
 1. Toque **Hist** para abrir o histórico.
 2. Use setas, Home/End e PgUp/PgDn para chegar ao começo do texto.
-3. Toque **Select** e use as setas para ampliar a seleção.
-4. Toque **Copy**. O terminal volta ao modo normal.
-5. Troque de janela/painel se desejar e toque **Paste**.
+3. Toque **Marcar** e use as setas para ampliar a seleção.
+4. Toque **Copiar**. O terminal volta ao modo normal.
+5. Troque de janela/painel se desejar e toque **Colar**.
 
-`Cancel`/Esc abandona a seleção. Ctrl+C continua sendo interrupção de comando,
+Esc abandona a seleção. Ctrl+C continua sendo interrupção de comando,
 e não copiar. O buffer pertence ao servidor tmux do seu usuário: funciona entre
 seus painéis e janelas, mas não é integrado automaticamente ao clipboard de
 Android, Windows, SSH ou de um desktop gráfico. O envio por OSC 52 está desligado.
@@ -245,8 +276,9 @@ podem ser executados ao receber uma nova linha em aplicativos sem essa proteçã
 ## Verificações realizadas e limites
 
 Os testes de C exercitam o código real de envio de teclas, libevdev simulado,
-toques rápidos, repetições, perda de sincronização, múltiplos dedos, troca de
-tracking ID, timeout e limites de layout. As três páginas são renderizadas nas
+toques rápidos, ausência de repetição, perda de sincronização, múltiplos dedos,
+troca de tracking ID, liberação ausente, recuperação de slots, limites de
+layout, expiração visual e acesso à pontuação ASCII. As três páginas são renderizadas nas
 quatro rotações, sob AddressSanitizer e UndefinedBehaviorSanitizer.
 
 ```bash
