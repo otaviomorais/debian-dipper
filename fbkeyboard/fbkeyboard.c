@@ -71,6 +71,7 @@ static FT_Face face;
 static struct libevdev *input;
 static struct winsize saved_size[MAX_NR_CONSOLES+1];
 static unsigned char resized[MAX_NR_CONSOLES+1];
+static unsigned char resize_warning[MAX_NR_CONSOLES+1];
 static struct touch_state gesture;
 static int dirty=1, active_vt=-1;
 
@@ -254,13 +255,25 @@ static int console_ready(void)
         struct winsize size;
         if(ioctl(fd,TIOCGWINSZ,&size)==0 && size.ws_row>0) {
             saved_size[vt.v_active]=size;
-            struct console_font_op font_op={.op=KD_FONT_OP_GET};
-            if(ioctl(fd,KDFONTOP,&font_op)<0 || !font_op.height) {
-                close(fd); return 0; /* cannot reserve rows safely */
+            /* Linux checks these capacities even when only requesting metrics
+               (data=NULL). Zero-initialized capacities return ENOSPC. */
+            struct console_font_op font_op={.op=KD_FONT_OP_GET,
+                .width=UINT_MAX,.height=UINT_MAX,.charcount=UINT_MAX};
+            unsigned font_height=0;
+            if(ioctl(fd,KDFONTOP,&font_op)==0) font_height=font_op.height;
+            if(!font_height && size.ws_ypixel && size.ws_ypixel%size.ws_row==0)
+                font_height=size.ws_ypixel/size.ws_row;
+            if(!font_height || font_height>(unsigned)full_height) {
+                if(!resize_warning[vt.v_active]) {
+                    fputs("Console font metrics unavailable; drawing keyboard without reserving rows\n",stderr);
+                    resize_warning[vt.v_active]=1;
+                }
+                close(fd); return ready; /* a font query must not block login */
             }
             /* Absolute font metrics avoid shrinking again after a restart. */
-            unsigned rows=(unsigned)(full_height-kb_height)/font_op.height;
+            unsigned rows=(unsigned)(full_height-kb_height)/font_height;
             size.ws_row=(unsigned short)(rows?rows:1);
+            size.ws_ypixel=(unsigned short)(size.ws_row*font_height);
             if(ioctl(fd,TIOCSWINSZ,&size)==0) resized[vt.v_active]=1;
         }
     }

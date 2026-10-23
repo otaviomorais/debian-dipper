@@ -1,8 +1,77 @@
 /* Exercise production dispatch, libevdev frame handling and all rotations. */
+#include <fcntl.h>
+#include <stdarg.h>
+#include <sys/ioctl.h>
+static int console_test_mode;
+static int console_test_open(const char *path, int flags);
+static int console_test_ioctl(int fd, unsigned long request, ...);
+#define open console_test_open
+#define ioctl console_test_ioctl
 #define main keyboard_program_main
 #include "fbkeyboard.c"
 #undef main
+#undef ioctl
+#undef open
 #include <assert.h>
+
+static struct winsize console_test_size;
+static int console_test_open(const char *path, int flags)
+{
+    if(console_test_mode && !strcmp(path,"/dev/tty1")) return dup(ttyfd);
+    return open(path,flags);
+}
+static int console_test_ioctl(int fd, unsigned long request, ...)
+{
+    va_list args;
+    va_start(args,request);
+    void *argument=va_arg(args,void *);
+    va_end(args);
+    if(!console_test_mode) return ioctl(fd,request,argument);
+    if(request==VT_GETSTATE) { ((struct vt_stat *)argument)->v_active=1; return 0; }
+    if(request==KDGETMODE) { *(int *)argument=KD_TEXT; return 0; }
+    if(request==TIOCGWINSZ) { *(struct winsize *)argument=console_test_size; return 0; }
+    if(request==TIOCSWINSZ) { console_test_size=*(struct winsize *)argument; return 0; }
+    if(request==KDFONTOP) {
+        struct console_font_op *op=argument;
+        /* Linux con_font_get rejects undersized width/height even with data=NULL. */
+        assert(op->op==KD_FONT_OP_GET && !op->data);
+        if(console_test_mode>1) { errno=ENOSYS; return -1; }
+        if(op->width<16 || op->height<32) { errno=ENOSPC; return -1; }
+        op->width=16; op->height=32; op->charcount=512;
+        return 0;
+    }
+    assert(!"Unexpected console ioctl");
+    return -1;
+}
+static void test_login_console(void)
+{
+    ttyfd=open("/dev/null",O_RDWR); assert(ttyfd>=0);
+    screen_w=1080; screen_h=2248; width=1080; full_height=2248;
+    key_height=full_height/3/ROWS; kb_height=key_height*ROWS;
+    console_test_mode=1;
+    console_test_size=(struct winsize){.ws_row=70,.ws_col=67,.ws_xpixel=1072,.ws_ypixel=2240};
+    active_vt=-1; resized[1]=0;
+    assert(console_ready());
+    assert(resized[1] && console_test_size.ws_row==(full_height-kb_height)/32);
+    /* A restart must reserve the same absolute rows, not shrink the VT again. */
+    resized[1]=0;
+    assert(console_ready());
+    assert(resized[1] && console_test_size.ws_row==(full_height-kb_height)/32);
+    console_test_mode=2; resized[1]=0;
+    console_test_size=(struct winsize){.ws_row=70,.ws_col=67,.ws_xpixel=1072,.ws_ypixel=2240};
+    assert(console_ready());
+    assert(resized[1] && console_test_size.ws_row==(full_height-kb_height)/32);
+    resized[1]=0;
+    assert(console_ready());
+    assert(resized[1] && console_test_size.ws_row==(full_height-kb_height)/32);
+    /* Missing font and pixel metrics must not hide the login keyboard. */
+    console_test_mode=3; resized[1]=0;
+    console_test_size=(struct winsize){.ws_row=70,.ws_col=67};
+    assert(console_ready());
+    assert(!resized[1] && console_test_size.ws_row==70);
+    console_test_mode=0; resized[1]=0; active_vt=-1;
+    close(ttyfd); ttyfd=-1;
+}
 
 static void test_events(void)
 {
@@ -98,7 +167,7 @@ static void test_render(void)
 }
 int main(void)
 {
-    test_events(); test_frames(); test_render();
-    puts("keyboard: complete key-up chords, fast MT taps, nonzero axis minima, layout bounds, 12 page/rotation renders: OK");
+    test_login_console(); test_events(); test_frames(); test_render();
+    puts("keyboard: login font ABI/fallback, restart sizing, complete key-up chords, fast MT taps, layout bounds, 12 page/rotation renders: OK");
     return 0;
 }

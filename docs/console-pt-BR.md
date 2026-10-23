@@ -7,6 +7,29 @@ Xorg, Wayland nem desktop. O console continua dependendo dos drivers de display
 do kernel; isto não é uma correção comprovada para o congelamento completo do
 aparelho investigado anteriormente.
 
+## Teclado não aparece no login: correção v0.1.1 por USB
+
+A imagem `console-v0.1.0` tem um erro na consulta `KDFONTOP`: o programa
+solicita dimensões máximas de fonte zeradas. O kernel retorna `ENOSPC` mesmo
+sem solicitar os dados dos glifos, e o programa fica ativo sem desenhar o
+teclado. O log pode mostrar somente `Touchscreen: stmfts; rotation 0`.
+A correção informa capacidades válidas, usa as dimensões em pixels da tty
+como alternativa e mantém o teclado visível se não puder reservar linhas.
+Os testes reproduzem a falha anterior e verificam também reinício e fallback.
+
+Para corrigir a instalação existente, baixe o ZIP de correção do release
+`console-v0.1.1` no fork `otaviomorais/debian-dipper`. No Windows, extraia tudo,
+conecte o Mi 8 pelo USB com o Debian na tela de login e execute
+`corrigir-teclado.bat`. O pacote contém ADB, o binário ARM64 e o instalador;
+não exige Wi-Fi, compilador no aparelho ou flash. Guarda o teclado anterior
+em `/var/backups/dipper-keyboard.XXXXXXXX/fbkeyboard` e gera dois arquivos de
+diagnóstico ao lado do `.bat`. Se o serviço não iniciar, restaura o binário
+anterior. A confirmação de que o teclado aparece depende do teste no aparelho.
+
+Com ADB já instalado, também é possível enviar a pasta `payload` do ZIP
+para o aparelho e executar `apply-keyboard-fix.sh` como root. Não executar
+`flash.bat`, `flash.sh` ou `fastboot erase` para aplicar esta correção.
+
 ## Gerar uma imagem que já vem pronta
 
 O fluxo principal agora pode incorporar tudo durante a construção. Não há
